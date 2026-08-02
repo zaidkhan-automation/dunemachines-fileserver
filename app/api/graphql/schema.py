@@ -195,6 +195,10 @@ class Mutation:
         request = info.context["request"]
         user = getattr(request.state, "user", None)
 
+        from app.services.permissions.rbac import check_permission
+        if not user or not check_permission(user, "projects", "write"):
+            raise Exception("Permission denied: projects:write")
+
         from app.core.database import AsyncSessionLocal
         from app.repositories.project_repo import project_repo
         import uuid as _uuid
@@ -228,6 +232,10 @@ class Mutation:
         """Soft delete an asset."""
         request = info.context["request"]
         user = getattr(request.state, "user", None)
+
+        from app.services.permissions.rbac import check_permission
+        if not user or not check_permission(user, "assets", "delete"):
+            raise Exception("Permission denied: assets:delete")
 
         from app.core.database import AsyncSessionLocal
         from app.repositories.asset_repo import asset_repo

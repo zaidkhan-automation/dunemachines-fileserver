@@ -301,6 +301,27 @@ class PermissionChecker:
         return cls(permissions)
 
 
+# ── Transport-agnostic checks ──────────────────────────────────────
+# Core enforcement logic, usable outside FastAPI's Depends() — e.g. from
+# GraphQL resolvers, which have no dependency-injection mechanism of their
+# own and would otherwise end up with a second, drifting copy of this logic.
+
+def check_permission(user: dict, resource: str, action: str) -> bool:
+    """Does `user` (a resolved identity dict with roles/scopes) have resource:action?"""
+    roles = user.get("roles", [])
+    if "owner" in roles or "admin" in roles:
+        return True
+    return PermissionChecker.from_token(user).has(resource, action)
+
+
+def check_any_permission(user: dict, *perms) -> bool:
+    """Does `user` have any of the given (resource, action) permissions?"""
+    roles = user.get("roles", [])
+    if "owner" in roles or "admin" in roles:
+        return True
+    return PermissionChecker.from_token(user).has_any(*perms)
+
+
 # ── FastAPI Dependencies ──────────────────────────────────────────
 
 def require_permission(resource: str, action: str):
@@ -309,14 +330,7 @@ def require_permission(resource: str, action: str):
     from app.core.security import get_current_user
 
     async def check(user: dict = Depends(get_current_user)):
-        checker = PermissionChecker.from_token(user)
-        roles = user.get("roles", [])
-
-        # Owner/admin bypass
-        if "owner" in roles or "admin" in roles:
-            return user
-
-        if not checker.has(resource, action):
+        if not check_permission(user, resource, action):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Permission denied: {resource}:{action}"
@@ -332,12 +346,7 @@ def require_any_permission(*perms):
     from app.core.security import get_current_user
 
     async def check(user: dict = Depends(get_current_user)):
-        roles = user.get("roles", [])
-        if "owner" in roles or "admin" in roles:
-            return user
-
-        checker = PermissionChecker.from_token(user)
-        if not checker.has_any(*perms):
+        if not check_any_permission(user, *perms):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Permission denied. Required one of: {perms}"
