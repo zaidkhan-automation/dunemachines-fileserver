@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.services.permissions.rbac import require_permission
 from app.repositories.asset_repo import asset_repo
 from app.models.asset import AssetType, AssetStatus, SourceType
 from app.events.producers import publish_event
@@ -54,7 +55,7 @@ class CreateFolderRequest(BaseModel):
 async def create_folder(
     req: CreateFolderRequest,
     db: AsyncSession = Depends(get_db),
-    user: Dict = Depends(get_current_user),
+    user: Dict = Depends(require_permission("folders", "write")),
 ):
     """Create a new folder (an Asset row with asset_type=folder)."""
     org_id = _safe_uuid(user.get("org_id"), DEFAULT_ORG)
@@ -127,7 +128,7 @@ async def delete_folder(
     folder_id: str,
     recursive: bool = False,
     db: AsyncSession = Depends(get_db),
-    user: Dict = Depends(get_current_user),
+    user: Dict = Depends(require_permission("folders", "delete")),
 ):
     """Delete a folder. recursive=True also soft-deletes all contents."""
     org_id = _safe_uuid(user.get("org_id"), DEFAULT_ORG)
