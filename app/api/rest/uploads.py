@@ -2,10 +2,11 @@
 Upload endpoints — signed URL based upload flow.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Dict, Any
 from app.services.uploads.upload_service import upload_service
 from app.core.database import get_db
+from app.core.config import settings
 from app.core.security import get_current_user
 from app.services.permissions.rbac import require_permission
 from app.repositories.asset_repo import asset_repo
@@ -19,11 +20,21 @@ router = APIRouter(prefix="/uploads", tags=["uploads"])
 class InitUploadRequest(BaseModel):
     filename: str = Field(..., min_length=1, max_length=512)
     mime_type: str = Field(..., min_length=1, max_length=256)
-    size_bytes: int = Field(..., gt=0, le=500 * 1024 * 1024)
+    size_bytes: int = Field(..., gt=0, le=settings.MAX_FILE_SIZE_MB * 1024 * 1024)
     project_id: Optional[str] = None
     parent_id: Optional[str] = None
     asset_type: Optional[str] = None
     extra_data: Optional[Dict[str, Any]] = None
+
+    @field_validator("mime_type")
+    @classmethod
+    def validate_mime_type(cls, v: str) -> str:
+        # ALLOWED_MIME_TYPES defaults to [] — empty means "not configured,
+        # no restriction", preserving today's fully-permissive behavior
+        # until an operator actually opts into an allowlist.
+        if settings.ALLOWED_MIME_TYPES and v not in settings.ALLOWED_MIME_TYPES:
+            raise ValueError(f"mime_type '{v}' is not in the allowed list")
+        return v
 
 
 class CompleteUploadRequest(BaseModel):
