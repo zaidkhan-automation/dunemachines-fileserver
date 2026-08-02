@@ -114,6 +114,23 @@ async def create_agent_token(
     if req.role in ["owner", "admin"] and "owner" not in requester_roles:
         raise HTTPException(status_code=403, detail="Cannot create tokens with higher privilege than your own role")
 
+    # Prevent privilege escalation via scopes — the check above only looks
+    # at req.role, but req.scopes is merged into the minted token's scopes
+    # claim unvalidated, and PermissionChecker treats scopes as direct
+    # permissions regardless of role. Without this, an admin could keep
+    # role="agent:read" (passing the check above) while smuggling in
+    # owner-only permissions (org:delete, org:billing, members:manage, ...)
+    # through scopes, defeating the role check entirely. A requester can
+    # only grant scopes they themselves actually have.
+    if req.scopes:
+        requester_permissions = PermissionChecker.from_token(user).get_permissions()
+        disallowed = [s for s in req.scopes if s not in requester_permissions]
+        if disallowed:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Cannot grant scopes you don't have: {disallowed}"
+            )
+
     # Build scopes
     scopes = list(role_data["permissions"])
     if req.scopes:
