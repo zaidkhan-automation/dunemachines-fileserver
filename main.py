@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
 
 from app.core.config import settings
 from app.core.logging import setup_logging
@@ -59,11 +60,15 @@ app.add_middleware(
 # ── Error Handlers ────────────────────────────────────────────────
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
+    # exc.errors() can embed a raw exception object in ctx.error for
+    # field_validator-raised errors (unlike plain Field constraints, whose
+    # ctx only holds plain values) — JSONResponse can't json.dumps that
+    # directly, so it must go through jsonable_encoder first.
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={
             "error": "validation_error",
-            "detail": exc.errors(),
+            "detail": jsonable_encoder(exc.errors()),
             "body": str(exc.body)[:500] if exc.body else None,
         },
     )
