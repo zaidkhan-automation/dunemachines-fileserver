@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.services.permissions.rbac import require_permission
 
 router = APIRouter(prefix="/connectors", tags=["connectors"])
 
@@ -28,7 +29,7 @@ class GitHubListReposRequest(BaseModel):
 async def sync_github_repo(
     req: GitHubSyncRequest,
     db: AsyncSession = Depends(get_db),
-    user: Dict = Depends(get_current_user),
+    user: Dict = Depends(require_permission("connectors", "sync")),
 ):
     """
     Sync a GitHub repository as assets.
@@ -154,7 +155,7 @@ async def _get_github_client(installation_id: str):
 
 
 @router.post("/github/pr/create")
-async def create_github_pr(req: GitHubPRRequest, user: Dict = Depends(get_current_user)):
+async def create_github_pr(req: GitHubPRRequest, user: Dict = Depends(require_permission("connectors", "pr:create"))):
     """Create a pull request on GitHub."""
     try:
         client = await _get_github_client(req.installation_id)
@@ -166,7 +167,7 @@ async def create_github_pr(req: GitHubPRRequest, user: Dict = Depends(get_curren
 
 
 @router.post("/github/branch/create")
-async def create_github_branch(req: GitHubBranchRequest, user: Dict = Depends(get_current_user)):
+async def create_github_branch(req: GitHubBranchRequest, user: Dict = Depends(require_permission("connectors", "branch:create"))):
     """Create a branch on GitHub."""
     try:
         client = await _get_github_client(req.installation_id)
@@ -178,7 +179,7 @@ async def create_github_branch(req: GitHubBranchRequest, user: Dict = Depends(ge
 
 
 @router.post("/github/file/push")
-async def push_github_file(req: GitHubFileRequest, user: Dict = Depends(get_current_user)):
+async def push_github_file(req: GitHubFileRequest, user: Dict = Depends(require_permission("connectors", "commit"))):
     """Push a file to GitHub repo."""
     try:
         client = await _get_github_client(req.installation_id)
@@ -190,7 +191,7 @@ async def push_github_file(req: GitHubFileRequest, user: Dict = Depends(get_curr
 
 
 @router.post("/github/comment")
-async def github_comment(req: GitHubCommentRequest, user: Dict = Depends(get_current_user)):
+async def github_comment(req: GitHubCommentRequest, user: Dict = Depends(require_permission("connectors", "pr:comment"))):
     """Comment on a GitHub issue or PR."""
     try:
         client = await _get_github_client(req.installation_id)
@@ -207,7 +208,7 @@ async def sync_via_installation(
     owner: str,
     repo: str,
     db=Depends(get_db),
-    user: Dict = Depends(get_current_user),
+    user: Dict = Depends(require_permission("connectors", "sync")),
 ):
     """Sync repo using GitHub App installation (no PAT needed)."""
     try:
