@@ -6,7 +6,7 @@ services:
     ports:
       - "8007:8007"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://fileserver:FileServer123@postgres:5432/fileserver_db
+      - DATABASE_URL=postgresql+asyncpg://fileserver:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/fileserver_db
       - REDIS_URL=redis://redis:6379/2
       - STORAGE_ENDPOINT=http://minio:9000
     depends_on:
@@ -21,7 +21,7 @@ services:
     image: postgres:16
     environment:
       POSTGRES_USER: fileserver
-      POSTGRES_PASSWORD: FileServer123
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
       POSTGRES_DB: fileserver_db
     ports:
       - "5433:5432"

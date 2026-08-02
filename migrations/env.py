@@ -8,10 +8,13 @@ from alembic import context
 # Import all models so Alembic can detect them
 from app.core.database import Base
 from app.models import Asset, User, Organization, Project, Permission, Version, Embedding
+from app.core.config import settings
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
 target_metadata = Base.metadata
 
