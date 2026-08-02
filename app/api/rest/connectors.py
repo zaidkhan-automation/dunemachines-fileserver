@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.core.config import settings
 from app.services.permissions.rbac import require_permission
 
 router = APIRouter(prefix="/connectors", tags=["connectors"])
@@ -114,7 +115,6 @@ async def github_connector_status(user: Dict = Depends(get_current_user)):
 # ── GitHub Actions (Action Layer) ────────────────────────────────
 
 class GitHubInstallationRequest(BaseModel):
-    installation_id: str = Field(default="133640523")
     owner: str
     repo: str
 
@@ -144,21 +144,37 @@ class GitHubCommentRequest(GitHubInstallationRequest):
     body: str
 
 
-async def _get_github_client(installation_id: str):
-    """Get GitHub client using App auth."""
-    import os
+async def _get_github_client():
+    """Get GitHub client using App auth — resolves to this app's single known installation.
+
+    installation_id used to be a client-supplied field with no check tying it
+    to the caller's org, letting any authenticated user act on ANY org's
+    GitHub installation. There's exactly one real installation today and no
+    per-org installation mapping in the schema, so the safe fix is deriving
+    it server-side instead of trusting client input — same principle as
+    resolve_identity() deriving org_id from the JWT instead of a client
+    field. If a second org installation is ever added, replace this with a
+    real org -> installation lookup rather than picking one arbitrarily.
+    """
     with open("/etc/dunemachines/github_private_key.pem") as f:
         private_key = f.read()
     from app.connectors.github.app_auth import GitHubAppAuth
-    auth = GitHubAppAuth(app_id="3765696", private_key_pem=private_key)
-    return await auth.get_installation_client(installation_id)
+    auth = GitHubAppAuth(app_id=settings.GITHUB_APP_ID, private_key_pem=private_key)
+    installations = await auth.list_installations()
+    if len(installations) != 1:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Expected exactly one GitHub App installation, found {len(installations)}. "
+                   "A per-org installation mapping is required before this can be resolved automatically."
+        )
+    return await auth.get_installation_client(str(installations[0]["id"]))
 
 
 @router.post("/github/pr/create")
 async def create_github_pr(req: GitHubPRRequest, user: Dict = Depends(require_permission("connectors", "pr:create"))):
     """Create a pull request on GitHub."""
     try:
-        client = await _get_github_client(req.installation_id)
+        client = await _get_github_client()
         from app.connectors.github.tools.create_pr import create_pull_request
         result = await create_pull_request(client, req.owner, req.repo, req.title, req.body, req.head, req.base)
         return result
@@ -170,7 +186,7 @@ async def create_github_pr(req: GitHubPRRequest, user: Dict = Depends(require_pe
 async def create_github_branch(req: GitHubBranchRequest, user: Dict = Depends(require_permission("connectors", "branch:create"))):
     """Create a branch on GitHub."""
     try:
-        client = await _get_github_client(req.installation_id)
+        client = await _get_github_client()
         from app.connectors.github.tools.create_branch import create_branch
         result = await create_branch(client, req.owner, req.repo, req.branch_name, req.from_branch)
         return result
@@ -182,7 +198,7 @@ async def create_github_branch(req: GitHubBranchRequest, user: Dict = Depends(re
 async def push_github_file(req: GitHubFileRequest, user: Dict = Depends(require_permission("connectors", "commit"))):
     """Push a file to GitHub repo."""
     try:
-        client = await _get_github_client(req.installation_id)
+        client = await _get_github_client()
         from app.connectors.github.tools.push_commit import push_file
         result = await push_file(client, req.owner, req.repo, req.path, req.content, req.message, req.branch, req.sha)
         return result
@@ -194,7 +210,7 @@ async def push_github_file(req: GitHubFileRequest, user: Dict = Depends(require_
 async def github_comment(req: GitHubCommentRequest, user: Dict = Depends(require_permission("connectors", "pr:comment"))):
     """Comment on a GitHub issue or PR."""
     try:
-        client = await _get_github_client(req.installation_id)
+        client = await _get_github_client()
         from app.connectors.github.tools.comment_pr import comment_on_issue
         result = await comment_on_issue(client, req.owner, req.repo, req.issue_number, req.body)
         return result
@@ -204,7 +220,6 @@ async def github_comment(req: GitHubCommentRequest, user: Dict = Depends(require
 
 @router.post("/github/sync/installation")
 async def sync_via_installation(
-    installation_id: str,
     owner: str,
     repo: str,
     db=Depends(get_db),
@@ -212,7 +227,7 @@ async def sync_via_installation(
 ):
     """Sync repo using GitHub App installation (no PAT needed)."""
     try:
-        client = await _get_github_client(installation_id)
+        client = await _get_github_client()
         from app.connectors.github.sync_engine import GitHubSyncEngine
         engine = GitHubSyncEngine(client=client, org_id=user["org_id"], user_id=user["user_id"])
         result = await engine.sync_repo(owner, repo, db)
@@ -223,12 +238,11 @@ async def sync_via_installation(
 
 @router.get("/github/installation/repos")
 async def list_installation_repos(
-    installation_id: str = "133640523",
     user: Dict = Depends(get_current_user),
 ):
     """List repos accessible via GitHub App installation."""
     try:
-        client = await _get_github_client(installation_id)
+        client = await _get_github_client()
         data = await client.get("/installation/repositories", params={"per_page": 100})
         repos = data.get("repositories", [])
         return {
