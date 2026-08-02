@@ -122,8 +122,6 @@ async def complete_upload(
 
     asset = await asset_repo.get_by_id(db, upload_id, _org)
     if not asset:
-        asset = await asset_repo.get_by_id_only(db, upload_id)
-    if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
 
     # Verify actual object checksum matches what client claims
@@ -188,10 +186,7 @@ async def get_download_url(
         _uuid.UUID(str(_org))
     except (ValueError, AttributeError):
         _org = "00000000-0000-0000-0000-000000000001"
-    # Try with normalized org first, then fallback to string "default"
     asset = await asset_repo.get_by_id(db, upload_id, _org)
-    if not asset:
-        asset = await asset_repo.get_by_id_only(db, upload_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     if not asset.blob_ref:

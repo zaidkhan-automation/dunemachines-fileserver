@@ -207,21 +207,4 @@ class AssetRepository:
         return list(result.scalars().all()), total
 
 
-    async def get_by_id_only(self, db: AsyncSession, asset_id: str) -> Optional[Asset]:
-        """Get asset by ID only — no org check. Used for Duniverse token fallback."""
-        try:
-            asset_uuid = uuid.UUID(asset_id)
-        except (ValueError, AttributeError):
-            return None
-        result = await db.execute(
-            select(Asset).where(
-                and_(
-                    Asset.id == asset_uuid,
-                    Asset.deleted_at.is_(None),
-                )
-            )
-        )
-        return result.scalar_one_or_none()
-
-
 asset_repo = AssetRepository()
