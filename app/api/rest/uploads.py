@@ -90,7 +90,12 @@ async def init_upload(
             "asset_type": result["asset"]["asset_type"],
             "mime_type": req.mime_type,
             "size_bytes": req.size_bytes,
-            "blob_ref": result["object_key"],
+            # blob_ref intentionally omitted — stays NULL until /complete
+            # verifies the object actually landed in storage. Setting it
+            # here (at init, before the client's PUT even starts) made
+            # download-url's `if not asset.blob_ref` check pass for an
+            # object that doesn't exist yet, returning a 404-from-storage
+            # that reads as "empty content" to callers.
             "blob_bucket": "dunemachines-files",
             "extra_data": req.extra_data or {},
         })
@@ -134,6 +139,17 @@ async def complete_upload(
     asset = await asset_repo.get_by_id(db, upload_id, _org)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
+
+    # Object must actually exist in storage before we mark this asset
+    # complete — blob_ref is no longer set at /init, so this is the one
+    # place that gates a "ready" asset on a verified upload. Without this,
+    # a client that never finished its PUT (or PUT'd to the wrong key)
+    # could still call /complete and leave a permanently-empty asset that
+    # looks saved.
+    try:
+        await upload_service.complete_upload(upload_id, req.object_key, req.checksum)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
     # Verify actual object checksum matches what client claims
     if req.checksum:
