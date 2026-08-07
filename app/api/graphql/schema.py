@@ -4,8 +4,12 @@ Strawberry + FastAPI integration.
 """
 import strawberry
 from strawberry.fastapi import GraphQLRouter
+from strawberry.extensions import AddValidationRules
+from graphql import NoSchemaIntrospectionCustomRule
 from typing import List, Optional
 from datetime import datetime
+
+from app.core.config import settings
 
 
 # ── Types ─────────────────────────────────────────────────────────
@@ -274,7 +278,11 @@ def _asset_to_gql(asset) -> AssetType:
 
 # ── Schema + Router ───────────────────────────────────────────────
 
-schema = strawberry.Schema(query=Query, mutation=Mutation)
+schema = strawberry.Schema(
+    query=Query,
+    mutation=Mutation,
+    extensions=[AddValidationRules([NoSchemaIntrospectionCustomRule])] if not settings.DEBUG else [],
+)
 
 
 async def get_context(request):
@@ -320,5 +328,5 @@ async def get_graphql_context(request: Request):
 graphql_router = GraphQLRouter(
     schema,
     context_getter=get_graphql_context,
-    graphiql=True,
+    graphiql=settings.DEBUG,
 )
