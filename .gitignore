@@ -13,3 +13,12 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .DS_Store
+
+# Manual/live test scripts that need real prod credentials or hit the real
+# prod host (mint live JWTs via create_access_token + settings.JWT_SECRET,
+# hardcode files.dunemachines.com, etc.) — these must never be committed.
+# Name-matching on the old files (test_full_prod.py, test_stress.py,
+# test_fixes_verification.py, test_security_audit.py) wouldn't have caught
+# 3 of the 4 removed 2026-08-07, so the convention going forward is: any
+# script like this lives under tests/manual/, which is ignored wholesale.
+tests/manual/
