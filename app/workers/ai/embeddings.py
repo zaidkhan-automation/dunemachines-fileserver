@@ -18,6 +18,19 @@ async def generate_embedding(text: str, model: str = "paraphrase-multilingual-mp
     return await _generate_embedding(text)
 
 
+def _extract_pdf_text_sync(content: bytes) -> str:
+    """Blocking PDF parse — only ever called via run_in_executor, never
+    directly from a coroutine (pypdf has no async API and a large/complex
+    PDF can take seconds, which would stall every other request on this
+    worker for the duration — same discipline as the dc74a25 live_terminal
+    freeze-bug fix and simulations/engines/base.py's BLOCKING_STEP path)."""
+    import pypdf
+    import io
+    reader = pypdf.PdfReader(io.BytesIO(content))
+    text = " ".join(page.extract_text() or "" for page in reader.pages)
+    return text[:10000]  # Cap at 10K chars
+
+
 async def extract_text_from_asset(object_key: str, mime_type: str) -> Optional[str]:
     """Extract text from asset based on mime type."""
     try:
@@ -36,12 +49,9 @@ async def extract_text_from_asset(object_key: str, mime_type: str) -> Optional[s
 
         if mime_type == "application/pdf":
             try:
-                import pypdf
-                import io
-                reader = pypdf.PdfReader(io.BytesIO(content))
-                text = " ".join(page.extract_text() or "" for page in reader.pages)
-                return text[:10000]  # Cap at 10K chars
-            except:
+                loop = asyncio.get_event_loop()
+                return await loop.run_in_executor(None, _extract_pdf_text_sync, content)
+            except Exception:
                 return None
         elif mime_type.startswith("text/"):
             return content.decode("utf-8", errors="ignore")[:10000]

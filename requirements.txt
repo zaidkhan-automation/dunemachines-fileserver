@@ -14,3 +14,4 @@ Pillow==10.4.0
 aiofiles==24.1.0
 rq==1.16.0
 python-magic==0.4.27
+pypdf==6.15.0
