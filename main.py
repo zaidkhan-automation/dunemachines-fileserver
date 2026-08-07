@@ -128,6 +128,16 @@ async def info():
 
 if __name__ == "__main__":
     import uvicorn
+    from app.core.logging_filters import RedactTokenFilter
+
+    log_config = uvicorn.config.LOGGING_CONFIG
+    log_config.setdefault("filters", {})["redact_ws_token"] = {
+        "()": RedactTokenFilter
+    }
+    log_config["loggers"]["uvicorn.error"].setdefault("filters", []).append(
+        "redact_ws_token"
+    )
+
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
@@ -135,4 +145,5 @@ if __name__ == "__main__":
         reload=settings.DEBUG,
         workers=1 if settings.DEBUG else 2,
         log_level="debug" if settings.DEBUG else "info",
+        log_config=log_config,
     )
