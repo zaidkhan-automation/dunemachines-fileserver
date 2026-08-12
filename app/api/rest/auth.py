@@ -1,7 +1,16 @@
+from datetime import timedelta
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 from app.core.security import create_access_token, get_current_user, resolve_identity, DEFAULT_BRIDGED_ROLES
+
+# Scoped to this exchange only (not the global ACCESS_TOKEN_EXPIRE_MINUTES
+# default, which other issuers here rely on for legitimately long-lived
+# agent/collaborator tokens). org_id is a snapshot taken at exchange time —
+# switching org afterward doesn't touch already-issued tokens, so a long
+# expiry here directly means a switch can take up to that long to be
+# reflected in what a user sees browsing files.
+BRIDGED_TOKEN_EXPIRE = timedelta(minutes=15)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -35,10 +44,10 @@ async def exchange_token(req: TokenRequest):
             "org_id": identity["org_id"],
             "roles": payload.get("roles") or DEFAULT_BRIDGED_ROLES,
             "source": "duniverse",
-        })
+        }, expires_delta=BRIDGED_TOKEN_EXPIRE)
         return TokenResponse(
             access_token=token,
-            expires_in=60 * 60 * 24 * 7,  # 7 days
+            expires_in=int(BRIDGED_TOKEN_EXPIRE.total_seconds()),
         )
     except HTTPException:
         raise
