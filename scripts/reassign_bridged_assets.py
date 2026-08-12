@@ -65,7 +65,7 @@ async def main(claims: dict[str, str], apply: bool):
                 print(f"SKIP  {asset_id}: no such asset")
                 continue
 
-            identity = resolve_identity({"sub": username})
+            identity = await resolve_identity({"sub": username})
             new_org = uuid.UUID(identity["org_id"])
             new_creator = uuid.UUID(identity["user_id"])
 

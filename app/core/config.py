@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str
 
+    # omnius_db (dunemachines_backend) — read-only, live org_id resolution.
+    # Optional: resolve_identity() fails open to the token's org_id claim
+    # (or per-user derivation) when unset or unreachable.
+    OMNIUS_DB_URL: Optional[str] = None
+
     # Redis
     REDIS_URL: str = "redis://localhost:6379/2"
 

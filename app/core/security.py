@@ -28,13 +28,19 @@ _BRIDGED_ORG_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "dunemachines-fileserver
 _BRIDGED_USER_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "dunemachines-fileserver/duniverse-bridged-user")
 
 
-def resolve_identity(payload: Dict[str, Any]) -> Dict[str, str]:
+async def resolve_identity(payload: Dict[str, Any]) -> Dict[str, str]:
     """Derive a stable (user_id, org_id) pair from a decoded JWT payload.
 
     Already-UUID subs (native file-server tokens) pass through unchanged.
     Non-UUID subs (Duniverse username bridge) get a per-username UUID
-    instead of collapsing onto a shared constant. An explicit org_id claim
-    on the token always wins over derivation.
+    instead of collapsing onto a shared constant.
+
+    org_id resolution order: a live lookup against omnius_db's
+    user_active_org (by the token's numeric "uid" claim, or its numeric
+    "sub" for dunemachines_backend-minted agent tokens) — so a user
+    switching org takes effect on their very next request, no new token
+    needed — then the token's own org_id claim as a fail-open fallback
+    for when that lookup can't reach omnius_db, then per-sub derivation.
     """
     sub = str(payload.get("sub") or payload.get("user_id") or "")
 
@@ -44,7 +50,15 @@ def resolve_identity(payload: Dict[str, Any]) -> Dict[str, str]:
     except ValueError:
         user_id = str(uuid.uuid5(_BRIDGED_USER_NAMESPACE, sub)) if sub else "00000000-0000-0000-0000-000000000000"
 
-    org_id = payload.get("org_id") or (
+    numeric_uid = payload.get("uid")
+    if numeric_uid is None and sub.isdigit():
+        numeric_uid = sub
+    org_id = None
+    if numeric_uid is not None:
+        from app.core.omnius_client import get_active_org_id
+        org_id = await get_active_org_id(int(numeric_uid))
+
+    org_id = org_id or payload.get("org_id") or (
         str(uuid.uuid5(_BRIDGED_ORG_NAMESPACE, sub)) if sub else "00000000-0000-0000-0000-000000000001"
     )
 
@@ -89,7 +103,7 @@ async def get_current_user(
     # Try native token
     try:
         payload = decode_token(token)
-        identity = resolve_identity(payload)
+        identity = await resolve_identity(payload)
         return {
             "user_id": identity["user_id"],
             "org_id": identity["org_id"],
@@ -103,7 +117,7 @@ async def get_current_user(
     # Try Duniverse token
     try:
         payload = decode_duniverse_token(token)
-        identity = resolve_identity(payload)
+        identity = await resolve_identity(payload)
         return {
             "user_id": identity["user_id"],
             "org_id": identity["org_id"],

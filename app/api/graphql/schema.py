@@ -295,7 +295,7 @@ async def get_context(request):
         try:
             from app.core.security import decode_token, resolve_identity
             payload = decode_token(token)
-            identity = resolve_identity(payload)
+            identity = await resolve_identity(payload)
             user = {
                 "user_id": identity["user_id"],
                 "org_id": identity["org_id"],
@@ -306,7 +306,7 @@ async def get_context(request):
             try:
                 from app.core.security import decode_duniverse_token, resolve_identity
                 payload = decode_duniverse_token(token)
-                identity = resolve_identity(payload)
+                identity = await resolve_identity(payload)
                 user = {
                     "user_id": identity["user_id"],
                     "org_id": identity["org_id"],

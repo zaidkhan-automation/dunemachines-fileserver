@@ -36,7 +36,7 @@ async def exchange_token(req: TokenRequest):
         payload = decode_duniverse_token(req.duniverse_token)
         if not (payload.get("sub") or payload.get("user_id")):
             raise HTTPException(status_code=401, detail="Invalid Duniverse token")
-        identity = resolve_identity(payload)
+        identity = await resolve_identity(payload)
 
         token = create_access_token({
             "sub": identity["user_id"],

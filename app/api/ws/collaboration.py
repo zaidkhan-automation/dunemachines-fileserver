@@ -141,7 +141,7 @@ async def authenticate_ws(token: str) -> Optional[dict]:
         return None
     try:
         payload = decode_token(token)
-        identity = resolve_identity(payload)
+        identity = await resolve_identity(payload)
         return {
             "user_id": identity["user_id"],
             "org_id": identity["org_id"],
@@ -152,7 +152,7 @@ async def authenticate_ws(token: str) -> Optional[dict]:
         pass
     try:
         payload = decode_duniverse_token(token)
-        identity = resolve_identity(payload)
+        identity = await resolve_identity(payload)
         return {
             "user_id": identity["user_id"],
             "org_id": identity["org_id"],
