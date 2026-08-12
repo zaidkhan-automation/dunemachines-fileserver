@@ -10,11 +10,19 @@ Fails open: any problem reaching omnius_db must never block auth, it
 just means resolve_identity falls back to the token's own org_id claim
 (if present) or its uuid5 derivation, exactly as before this existed.
 
-Short in-process TTL cache bounds both the staleness window and the
-query volume — every authenticated request would otherwise hit
-omnius_db, and a switch is still effectively "immediate" from a user's
-perspective at a few seconds of cache lag, versus the old 15-minute
-token-refresh-bound propagation.
+Short TTL cache bounds both the staleness window and the query volume
+— every authenticated request would otherwise hit omnius_db, and a
+switch is still effectively "immediate" from a user's perspective at a
+few seconds of cache lag, versus the old 15-minute token-refresh-bound
+propagation.
+
+This process runs with uvicorn workers=2 in production (main.py), so
+the cache lives in Redis rather than a local dict — a local dict would
+give each worker its own independently-expiring snapshot of a user's
+active org, and since requests land on either worker essentially at
+random, a user switching orgs would see results flap between the old
+and new org (whichever worker's cache hadn't expired yet) instead of
+flipping once, consistently, for both.
 """
 
 import asyncpg
@@ -23,6 +31,7 @@ import time
 from typing import Optional
 
 from app.core.config import settings
+from app.core.redis import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +39,7 @@ _pool: Optional[asyncpg.Pool] = None
 _last_fail_ts: float = 0.0
 _FAIL_COOLDOWN_SECONDS = 60  # avoid hammering a down/misconfigured omnius_db every request
 
-_cache: dict[int, tuple[Optional[str], float]] = {}
+_CACHE_KEY_PREFIX = "fileserver:active_org:"
 _CACHE_TTL_SECONDS = 5
 
 
@@ -59,20 +68,34 @@ async def _get_pool() -> Optional[asyncpg.Pool]:
         return None
 
 
+# Sentinel stored in Redis to distinguish "looked up, user has no active
+# org" (cache this — don't re-query every request) from "not cached yet"
+# (Redis GET returning None for a missing key).
+_NO_ACTIVE_ORG_SENTINEL = "__none__"
+
+
 async def get_active_org_id(user_id: int) -> Optional[str]:
     """user_id is app_users.id (duniverse_db) / omnius_db's own bigint ids
     for agent tokens — same key user_active_org keys on. Returns None on
     any failure, cache miss beyond TTL aside, or if the user has no
-    active org set."""
-    now = time.monotonic()
-    cached = _cache.get(user_id)
-    if cached is not None and (now - cached[1]) < _CACHE_TTL_SECONDS:
-        return cached[0]
+    active org set.
+
+    Cached in Redis (not a local dict) because this process runs with
+    multiple uvicorn workers — see module docstring."""
+    cache_key = f"{_CACHE_KEY_PREFIX}{user_id}"
+
+    try:
+        redis_client = await get_redis()
+        cached = await redis_client.get(cache_key)
+        if cached is not None:
+            return None if cached == _NO_ACTIVE_ORG_SENTINEL else cached
+    except Exception as e:
+        logger.warning(f"active-org cache read failed for user_id={user_id}: {e}")
 
     try:
         pool = await _get_pool()
         if pool is None:
-            return cached[0] if cached is not None else None
+            return None
         async with pool.acquire() as conn:
             org_id = await conn.fetchval(
                 "SELECT org_id FROM user_active_org WHERE user_id = $1", user_id
@@ -80,7 +103,15 @@ async def get_active_org_id(user_id: int) -> Optional[str]:
             result = str(org_id) if org_id else None
     except Exception as e:
         logger.warning(f"active-org lookup failed for user_id={user_id}: {e}")
-        return cached[0] if cached is not None else None
+        return None
 
-    _cache[user_id] = (result, now)
+    try:
+        redis_client = await get_redis()
+        await redis_client.set(
+            cache_key, result if result is not None else _NO_ACTIVE_ORG_SENTINEL,
+            ex=_CACHE_TTL_SECONDS,
+        )
+    except Exception as e:
+        logger.warning(f"active-org cache write failed for user_id={user_id}: {e}")
+
     return result
