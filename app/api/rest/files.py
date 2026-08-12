@@ -165,39 +165,42 @@ async def get_full_tree(
             "mime_type": asset.mime_type,
             "size_bytes": asset.size_bytes,
             "children": [],
+            "children_truncated": False,
         }
 
-    async def walk(parent_id: Optional[str], depth: int) -> List[Dict]:
+    async def walk(parent_id: Optional[str], depth: int) -> tuple[List[Dict], bool]:
         if depth > max_depth:
-            return []
-        items, _ = await asset_repo.list(
+            return [], False
+        items, total = await asset_repo.list(
             db, org_id=org_id, project_id=project_id,
             parent_id=parent_id,
             parent_id_is_null=(parent_id is None),
             limit=500,
         )
+        truncated = total > len(items)
         nodes = []
         for item in items:
             node = await build_node(item)
             if item.asset_type == "folder":
-                node["children"] = await walk(str(item.id), depth + 1)
+                node["children"], node["children_truncated"] = await walk(str(item.id), depth + 1)
             nodes.append(node)
-        return nodes
+        return nodes, truncated
 
     if root_id:
         root = await asset_repo.get_by_id(db, root_id, org_id)
         if not root:
             raise HTTPException(status_code=404, detail="root_id not found")
         tree_root = await build_node(root)
-        tree_root["children"] = await walk(root_id, 1)
+        tree_root["children"], tree_root["children_truncated"] = await walk(root_id, 1)
         return tree_root
     else:
-        children = await walk(None, 1)
+        children, truncated = await walk(None, 1)
         return {
             "id": None,
             "name": "root",
             "asset_type": "root",
             "children": children,
+            "children_truncated": truncated,
         }
 
 
