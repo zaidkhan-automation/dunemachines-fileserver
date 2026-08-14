@@ -12,7 +12,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Set, Optional
 from fastapi import WebSocket, WebSocketDisconnect, APIRouter, Query
-from app.core.security import decode_token, decode_duniverse_token, resolve_identity
+from app.core.security import decode_token, decode_duniverse_token, resolve_identity, DEFAULT_BRIDGED_ROLES
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -146,7 +146,11 @@ async def authenticate_ws(token: str) -> Optional[dict]:
             "user_id": identity["user_id"],
             "org_id": identity["org_id"],
             "email": payload.get("email", ""),
-            "roles": payload.get("roles", []),
+            # Step 3: was a bare payload.get("roles", []) — a bridged Duniverse
+        # token (no roles claim) landed here with roles=[], zero permissions.
+        # Falls through to resolve_identity's live org-role lookup, then the
+        # same blanket default get_current_user uses.
+        "roles": payload.get("roles") or identity.get("roles") or DEFAULT_BRIDGED_ROLES,
         }
     except Exception:
         pass
@@ -157,7 +161,11 @@ async def authenticate_ws(token: str) -> Optional[dict]:
             "user_id": identity["user_id"],
             "org_id": identity["org_id"],
             "email": payload.get("email", ""),
-            "roles": payload.get("roles", []),
+            # Step 3: was a bare payload.get("roles", []) — a bridged Duniverse
+        # token (no roles claim) landed here with roles=[], zero permissions.
+        # Falls through to resolve_identity's live org-role lookup, then the
+        # same blanket default get_current_user uses.
+        "roles": payload.get("roles") or identity.get("roles") or DEFAULT_BRIDGED_ROLES,
         }
     except Exception:
         return None

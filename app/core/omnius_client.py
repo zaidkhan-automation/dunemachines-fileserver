@@ -115,3 +115,57 @@ async def get_active_org_id(user_id: int) -> Optional[str]:
         logger.warning(f"active-org cache write failed for user_id={user_id}: {e}")
 
     return result
+
+
+_ROLE_CACHE_KEY_PREFIX = "fileserver:org_role:"
+_NO_ROLE_SENTINEL = "__none__"
+
+
+async def get_org_role(user_id: int, org_id: str) -> Optional[str]:
+    """user_id/org_id's role in omnius_db.organization_members — the
+    raw OrgRole string (viewer/member/editor/admin/owner; see
+    dunemachines_backend/app/models/organization.py). Returns None on
+    any failure or if the pair has no membership row, same fail-open
+    contract as get_active_org_id: a lookup problem must never block
+    auth, it just means the caller falls back to its own default
+    role (see resolve_identity in app/core/security.py).
+
+    Step 3 (org-level permission enforcement): before this, every
+    Duniverse-bridged token defaulted to DEFAULT_BRIDGED_ROLES=["editor"]
+    regardless of the user's actual org role, so a viewer had the same
+    file-write access as an editor. This is the live lookup that closes
+    that gap."""
+    cache_key = f"{_ROLE_CACHE_KEY_PREFIX}{org_id}:{user_id}"
+
+    try:
+        redis_client = await get_redis()
+        cached = await redis_client.get(cache_key)
+        if cached is not None:
+            return None if cached == _NO_ROLE_SENTINEL else cached
+    except Exception as e:
+        logger.warning(f"org-role cache read failed for user_id={user_id} org_id={org_id}: {e}")
+
+    try:
+        pool = await _get_pool()
+        if pool is None:
+            return None
+        async with pool.acquire() as conn:
+            role = await conn.fetchval(
+                "SELECT role FROM organization_members WHERE org_id = $1::uuid AND user_id = $2",
+                org_id, user_id,
+            )
+            result = str(role) if role else None
+    except Exception as e:
+        logger.warning(f"org-role lookup failed for user_id={user_id} org_id={org_id}: {e}")
+        return None
+
+    try:
+        redis_client = await get_redis()
+        await redis_client.set(
+            cache_key, result if result is not None else _NO_ROLE_SENTINEL,
+            ex=_CACHE_TTL_SECONDS,
+        )
+    except Exception as e:
+        logger.warning(f"org-role cache write failed for user_id={user_id} org_id={org_id}: {e}")
+
+    return result

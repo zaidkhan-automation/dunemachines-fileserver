@@ -293,25 +293,37 @@ async def get_context(request):
     if auth_header.startswith("Bearer "):
         token = auth_header[7:]
         try:
-            from app.core.security import decode_token, resolve_identity
+            from app.core.security import decode_token, resolve_identity, DEFAULT_BRIDGED_ROLES
             payload = decode_token(token)
             identity = await resolve_identity(payload)
             user = {
                 "user_id": identity["user_id"],
                 "org_id": identity["org_id"],
                 "email": payload.get("email", ""),
-                "roles": payload.get("roles", []),
+                # Step 3: this used to be a bare payload.get("roles", []) with
+                # NO fallback at all — a bridged Duniverse token (never
+                # carries a roles claim) landed here with roles=[], i.e. zero
+                # permissions, worse than the REST DEFAULT_BRIDGED_ROLES path.
+                # Falls through to the same live org-role lookup / blanket
+                # default get_current_user uses (see app/core/security.py).
+                "roles": payload.get("roles") or identity.get("roles") or DEFAULT_BRIDGED_ROLES,
             }
         except Exception:
             try:
-                from app.core.security import decode_duniverse_token, resolve_identity
+                from app.core.security import decode_duniverse_token, resolve_identity, DEFAULT_BRIDGED_ROLES
                 payload = decode_duniverse_token(token)
                 identity = await resolve_identity(payload)
                 user = {
                     "user_id": identity["user_id"],
                     "org_id": identity["org_id"],
                     "email": payload.get("email", ""),
-                    "roles": payload.get("roles", []),
+                    # Step 3: this used to be a bare payload.get("roles", []) with
+                # NO fallback at all — a bridged Duniverse token (never
+                # carries a roles claim) landed here with roles=[], i.e. zero
+                # permissions, worse than the REST DEFAULT_BRIDGED_ROLES path.
+                # Falls through to the same live org-role lookup / blanket
+                # default get_current_user uses (see app/core/security.py).
+                "roles": payload.get("roles") or identity.get("roles") or DEFAULT_BRIDGED_ROLES,
                 }
             except Exception:
                 pass

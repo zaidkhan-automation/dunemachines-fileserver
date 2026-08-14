@@ -11,10 +11,13 @@ from app.core.config import settings
 
 security = HTTPBearer()
 
-# Tokens bridged in from Duniverse (native login, no fileserver RBAC concept)
-# never carry a roles claim. Default them to editor rather than zero
-# permissions, matching the implicit full trust already granted to any
-# authenticated user by the unguarded folder endpoints.
+# Tokens bridged in from Duniverse (native login, no fileserver RBAC concept
+# of their own) never carry a roles claim. get_current_user's first choice is
+# a live lookup of the user's real organization_members role (resolve_identity
+# -> get_org_role, Step 3) — this is now only the last-resort fallback for
+# when that lookup can't run at all (no numeric uid on the token, or no
+# omnius_db organization membership found), matching the implicit full trust
+# previously granted unconditionally to any authenticated bridged user.
 DEFAULT_BRIDGED_ROLES = ["editor"]
 
 # Duniverse-bridged tokens carry a username in `sub` and no org_id claim at
@@ -28,8 +31,24 @@ _BRIDGED_ORG_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "dunemachines-fileserver
 _BRIDGED_USER_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "dunemachines-fileserver/duniverse-bridged-user")
 
 
-async def resolve_identity(payload: Dict[str, Any]) -> Dict[str, str]:
-    """Derive a stable (user_id, org_id) pair from a decoded JWT payload.
+
+# Step 3: dunemachines_backend's OrgRole vocabulary (viewer/member/editor/
+# admin/owner — app/models/organization.py) mapped onto this repo's own
+# BUILT_IN_ROLES keys (app/services/permissions/rbac.py). "member" is that
+# repo's legacy pre-Step-3 role name; it has no equivalent of its own here
+# and collapses onto "editor", the tier it's aliased to on that side too.
+_ORG_ROLE_TO_FILESERVER_ROLE = {
+    "viewer": "viewer",
+    "member": "editor",
+    "editor": "editor",
+    "admin": "admin",
+    "owner": "owner",
+}
+
+
+async def resolve_identity(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Derive a stable (user_id, org_id, roles) triple from a decoded
+    JWT payload.
 
     Already-UUID subs (native file-server tokens) pass through unchanged.
     Non-UUID subs (Duniverse username bridge) get a per-username UUID
@@ -41,6 +60,13 @@ async def resolve_identity(payload: Dict[str, Any]) -> Dict[str, str]:
     switching org takes effect on their very next request, no new token
     needed — then the token's own org_id claim as a fail-open fallback
     for when that lookup can't reach omnius_db, then per-sub derivation.
+
+    roles: a live lookup against omnius_db's organization_members for
+    the same (numeric_uid, org_id) pair, mapped through
+    _ORG_ROLE_TO_FILESERVER_ROLE. None when the lookup can't run (no
+    numeric_uid, org_id never resolved to a real membership, or a DB
+    problem) — get_current_user falls back to DEFAULT_BRIDGED_ROLES in
+    that case, same as before this existed.
     """
     sub = str(payload.get("sub") or payload.get("user_id") or "")
 
@@ -62,7 +88,16 @@ async def resolve_identity(payload: Dict[str, Any]) -> Dict[str, str]:
         str(uuid.uuid5(_BRIDGED_ORG_NAMESPACE, sub)) if sub else "00000000-0000-0000-0000-000000000001"
     )
 
-    return {"user_id": user_id, "org_id": org_id}
+    roles = None
+    if numeric_uid is not None:
+        from app.core.omnius_client import get_org_role
+        org_role = await get_org_role(int(numeric_uid), org_id)
+        if org_role is not None:
+            mapped = _ORG_ROLE_TO_FILESERVER_ROLE.get(org_role)
+            if mapped is not None:
+                roles = [mapped]
+
+    return {"user_id": user_id, "org_id": org_id, "roles": roles}
 
 
 def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
@@ -108,7 +143,13 @@ async def get_current_user(
             "user_id": identity["user_id"],
             "org_id": identity["org_id"],
             "email": payload.get("email", ""),
-            "roles": payload.get("roles") or DEFAULT_BRIDGED_ROLES,
+            # A token's own roles claim (native file-server tokens, and
+            # dunemachines_backend's mint_fileserver_token agent tokens)
+            # always wins — it's an explicit grant. Only a truly bare
+            # Duniverse-bridged token (no roles claim at all) falls
+            # through to the live org-role lookup, then the blanket
+            # default if that lookup found nothing either.
+            "roles": payload.get("roles") or identity.get("roles") or DEFAULT_BRIDGED_ROLES,
             "source": "native",
         }
     except HTTPException:
@@ -122,7 +163,7 @@ async def get_current_user(
             "user_id": identity["user_id"],
             "org_id": identity["org_id"],
             "email": payload.get("email", ""),
-            "roles": payload.get("roles") or DEFAULT_BRIDGED_ROLES,
+            "roles": payload.get("roles") or identity.get("roles") or DEFAULT_BRIDGED_ROLES,
             "source": "duniverse",
         }
     except HTTPException:

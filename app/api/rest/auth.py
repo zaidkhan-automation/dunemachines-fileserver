@@ -42,7 +42,15 @@ async def exchange_token(req: TokenRequest):
             "sub": identity["user_id"],
             "email": payload.get("email", ""),
             "org_id": identity["org_id"],
-            "roles": payload.get("roles") or DEFAULT_BRIDGED_ROLES,
+            # Step 3: this is the actual path most bridged sessions go
+            # through (frontend exchanges its Duniverse token once, then
+            # uses the resulting native token for the ~15min it's valid) —
+            # baking DEFAULT_BRIDGED_ROLES in here unconditionally would
+            # make get_current_user's live org-role lookup for bridged
+            # tokens moot, since a token's own roles claim always wins
+            # there. identity["roles"] is resolve_identity's live lookup
+            # of the real organization_members role for this exchange.
+            "roles": payload.get("roles") or identity.get("roles") or DEFAULT_BRIDGED_ROLES,
             "source": "duniverse",
         }, expires_delta=BRIDGED_TOKEN_EXPIRE)
         return TokenResponse(
