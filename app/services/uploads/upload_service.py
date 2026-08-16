@@ -15,6 +15,17 @@ from botocore.config import Config
 from app.core.config import settings
 from app.models.asset import AssetType, AssetStatus
 
+# Defensive bounds on presigned-URL lifetime — no caller passes a value
+# outside this range today (both call sites use the 3600s default), but
+# clamping here means a future caller can never accidentally mint a
+# near-infinite or near-zero-lifetime signed URL.
+_MIN_EXPIRY_SECONDS = 300      # 5 minutes
+_MAX_EXPIRY_SECONDS = 86400    # 24 hours
+
+
+def _clamp_expiry(expires_in: int) -> int:
+    return max(_MIN_EXPIRY_SECONDS, min(expires_in, _MAX_EXPIRY_SECONDS))
+
 
 class UploadService:
     def __init__(self):
@@ -74,6 +85,7 @@ class UploadService:
         }
 
     async def generate_presigned_get(self, object_key: str, expires_in: int = 3600, filename: Optional[str] = None) -> str:
+        expires_in = _clamp_expiry(expires_in)
         params = {"Bucket": self.bucket, "Key": object_key}
         if filename:
             params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
@@ -90,6 +102,7 @@ class UploadService:
             return url
 
     async def _generate_presigned_put(self, object_key: str, mime_type: str, expires_in: int = 3600) -> str:
+        expires_in = _clamp_expiry(expires_in)
         async with self.session.client(
             "s3", endpoint_url=self.endpoint,
             aws_access_key_id=settings.STORAGE_ACCESS_KEY,
