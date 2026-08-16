@@ -40,9 +40,17 @@ async def handle_github_webhook(
     """
     payload_bytes = await request.body()
 
-    # Verify signature
-    secret = getattr(settings, "GITHUB_WEBHOOK_SECRET", "")
-    if secret and not verify_signature(payload_bytes, x_hub_signature_256 or "", secret):
+    # Verify signature — fail closed. GITHUB_WEBHOOK_SECRET is a required
+    # Settings field so it can't be literally unset, but it could still be
+    # an empty string (blank .env value); the old `if secret and ...` form
+    # silently skipped verification entirely in that case instead of
+    # rejecting every request, which is the opposite of what an operator
+    # would expect from a misconfigured secret.
+    secret = getattr(settings, "GITHUB_WEBHOOK_SECRET", "") or ""
+    if not secret:
+        logger.error("GITHUB_WEBHOOK_SECRET is empty — rejecting webhook, refusing to run unverified")
+        raise HTTPException(status_code=401, detail="Webhook verification not configured")
+    if not verify_signature(payload_bytes, x_hub_signature_256 or "", secret):
         logger.warning(f"Invalid webhook signature for delivery {x_github_delivery}")
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
