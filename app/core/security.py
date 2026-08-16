@@ -154,12 +154,20 @@ async def get_current_user(
         # This service's own JWT_SECRET is also shared with
         # dunemachines_backend for the agent-sync bridge
         # (fileserver_sync.mint_fileserver_token) — a token decoding
-        # successfully here is NOT proof it was self-issued. Only trust
-        # its roles/org_id claims when issuer says so; "omnius_backend"
-        # (bridged) must always fall through to the live DB lookup
-        # instead, even though that lookup is itself fail-open on a DB
-        # outage — never trusting an untrusted claim as the fallback.
-        trust_claims = payload.get("issuer") != "omnius_backend"
+        # successfully here is NOT proof it was self-issued. Only an
+        # EXPLICIT issuer == "fileserver" claim is trusted; a missing
+        # issuer is treated the same as a bridged token, not as
+        # implicitly native — an attacker holding the shared secret can
+        # forge any field, including issuer itself, so the safest
+        # default is "no issuer claim => not proven self-issued". This
+        # still doesn't stop someone who also forges issuer="fileserver"
+        # (that requires splitting onto a fileserver-exclusive signing
+        # secret, deliberately deferred for now), but it does close the
+        # trivial no-issuer/omitted-field bypass. Untrusted tokens
+        # always fall through to the live DB lookup instead, which is
+        # itself fail-open on a DB outage — never trusting the claim as
+        # the fallback.
+        trust_claims = payload.get("issuer") == "fileserver"
         identity = await resolve_identity(payload, trust_claims=trust_claims)
         claimed_roles = payload.get("roles") if trust_claims else None
         return {
@@ -167,11 +175,11 @@ async def get_current_user(
             "org_id": identity["org_id"],
             "email": payload.get("email", ""),
             # A trusted token's own roles claim (native file-server
-            # tokens, i.e. issuer == "fileserver" or absent) always
-            # wins — it's an explicit grant. A bridged token (issuer ==
-            # "omnius_backend") or a bare Duniverse-bridged token (no
-            # roles claim at all) falls through to the live org-role
-            # lookup, then the blanket default if that found nothing.
+            # tokens, i.e. issuer == "fileserver" explicitly) always
+            # wins — it's an explicit grant. Any other token (bridged,
+            # or missing/unrecognized issuer) falls through to the live
+            # org-role lookup, then the blanket default if that found
+            # nothing either.
             "roles": claimed_roles or identity.get("roles") or DEFAULT_BRIDGED_ROLES,
             "source": "native",
         }
@@ -181,7 +189,7 @@ async def get_current_user(
     # Try Duniverse token
     try:
         payload = decode_duniverse_token(token)
-        trust_claims = payload.get("issuer") != "omnius_backend"
+        trust_claims = payload.get("issuer") == "fileserver"
         identity = await resolve_identity(payload, trust_claims=trust_claims)
         claimed_roles = payload.get("roles") if trust_claims else None
         return {

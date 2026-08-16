@@ -11,11 +11,14 @@ roles/org_id claims unconditionally, so anyone able to mint a token
 with the shared secret could claim owner-level access to any org
 (confirmed live during a production RBAC audit).
 
-Fix: only "issuer": "fileserver" (or absent — genuinely native) tokens
-get their claims trusted. "issuer": "omnius_backend" tokens must always
-re-derive role/org_id from the live DB lookup (get_org_role /
-get_active_org_id), which is itself fail-open on a DB outage but never
-trusts the claim as a substitute.
+Fix: only an EXPLICIT "issuer": "fileserver" claim gets its
+roles/org_id trusted. Everything else — "issuer": "omnius_backend",
+or no issuer claim at all — must always re-derive role/org_id from the
+live DB lookup (get_org_role / get_active_org_id), which is itself
+fail-open on a DB outage but never trusts the claim as a substitute.
+(A forger who also spoofs issuer="fileserver" isn't caught by this —
+that requires fileserver to sign native tokens with a secret it
+doesn't share with dunemachines_backend, deliberately deferred.)
 
 These tests call the security module directly and mock the live-lookup
 functions — no DB/Redis dependency, no app startup required.
@@ -65,6 +68,32 @@ async def test_forged_bridged_token_ignores_roles_and_org_id_claims():
     assert user["roles"] != ["owner"], "forged owner role claim must not be trusted for a bridged token"
     assert user["org_id"] != FORGED_ORG_ID, "forged org_id claim must not be trusted for a bridged token"
     assert user["roles"] == ["editor"]  # DEFAULT_BRIDGED_ROLES fallback
+
+
+@pytest.mark.asyncio
+async def test_forged_token_with_no_issuer_claim_is_also_untrusted():
+    """A forger who has the shared JWT_SECRET can just omit the issuer
+    claim entirely rather than labeling it "omnius_backend" honestly —
+    only an EXPLICIT issuer=="fileserver" is trusted, so a missing
+    issuer must be treated the same as a bridged token, not as
+    implicitly native. This is what actually closes the trivial bypass
+    of the first version of this fix (which trusted "fileserver or
+    missing")."""
+    token = _mint_raw({
+        "sub": "78997",
+        "uid": 78997,
+        "roles": ["owner"],
+        "org_id": FORGED_ORG_ID,
+        # no "issuer" claim at all
+    })
+
+    with patch("app.core.omnius_client.get_active_org_id", new=AsyncMock(return_value=None)), \
+         patch("app.core.omnius_client.get_org_role", new=AsyncMock(return_value=None)):
+        user = await get_current_user(_Creds(token))
+
+    assert user["roles"] != ["owner"]
+    assert user["org_id"] != FORGED_ORG_ID
+    assert user["roles"] == ["editor"]
 
 
 @pytest.mark.asyncio
