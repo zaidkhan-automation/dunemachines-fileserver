@@ -1,58 +1,77 @@
-"""Finding #8: Qdrant client must be able to authenticate, and a public,
-unauthenticated-looking config must be loudly flagged (not silently
-allowed, but also not a hard startup failure — that exact config might
-already be firewalled at the network level, which this process can't
-observe, so this stays a warning, not a raise)."""
-from unittest.mock import AsyncMock, MagicMock, patch
+"""
+Finding #8 (revised, 2026-08): Qdrant confirmed genuinely reachable on a
+non-localhost address with no auth via live netstat on the production
+server — this is a hard RuntimeError at config-load time, not a
+warning. Only localhost/127.0.0.1/unix:// are treated as safe without
+QDRANT_API_KEY set.
 
-from app.services.search import indexer
-from app.services.search.indexer import _looks_private, get_qdrant
+qdrant_requires_api_key() is unit-tested directly (pure function, no
+import-time side effects to fight with). The actual startup crash is
+tested via a real subprocess — the most faithful way to confirm "fails
+at process startup" without the fragility of mutating os.environ and
+reimporting a pydantic-settings module in-process (module caching and
+env-var precedence made that approach flaky).
+"""
+import os
+import subprocess
+import sys
 
-
-def test_looks_private_localhost():
-    assert _looks_private("http://localhost:7333") is True
-
-
-def test_looks_private_rfc1918():
-    assert _looks_private("http://10.0.0.5:7333") is True
-    assert _looks_private("http://192.168.1.5:7333") is True
-
-
-def test_looks_private_public_ip_is_false():
-    assert _looks_private("http://76.13.17.48:7333") is False
+from app.core.config import qdrant_requires_api_key
 
 
-def test_get_qdrant_passes_api_key_when_configured():
-    indexer._client = None
-    with patch("app.services.search.indexer.settings") as mock_settings, \
-         patch("app.services.search.indexer.AsyncQdrantClient") as mock_ctor:
-        mock_settings.QDRANT_URL = "http://76.13.17.48:7333"
-        mock_settings.QDRANT_API_KEY = "real-key-123"
-        get_qdrant()
-        _, kwargs = mock_ctor.call_args
-        assert kwargs["api_key"] == "real-key-123"
-    indexer._client = None
+def test_localhost_does_not_require_key():
+    assert qdrant_requires_api_key("http://localhost:6333") is False
 
 
-def test_get_qdrant_warns_on_public_url_with_no_api_key():
-    indexer._client = None
-    with patch("app.services.search.indexer.settings") as mock_settings, \
-         patch("app.services.search.indexer.AsyncQdrantClient"), \
-         patch("app.services.search.indexer.logger") as mock_logger:
-        mock_settings.QDRANT_URL = "http://76.13.17.48:7333"
-        mock_settings.QDRANT_API_KEY = None
-        get_qdrant()
-        assert mock_logger.warning.called
-    indexer._client = None
+def test_127_0_0_1_does_not_require_key():
+    assert qdrant_requires_api_key("http://127.0.0.1:6333") is False
 
 
-def test_get_qdrant_no_warning_for_private_url():
-    indexer._client = None
-    with patch("app.services.search.indexer.settings") as mock_settings, \
-         patch("app.services.search.indexer.AsyncQdrantClient"), \
-         patch("app.services.search.indexer.logger") as mock_logger:
-        mock_settings.QDRANT_URL = "http://localhost:7333"
-        mock_settings.QDRANT_API_KEY = None
-        get_qdrant()
-        assert not mock_logger.warning.called
-    indexer._client = None
+def test_unix_socket_does_not_require_key():
+    assert qdrant_requires_api_key("unix:///var/run/qdrant.sock") is False
+
+
+def test_public_hostname_requires_key():
+    assert qdrant_requires_api_key("http://qdrant.example.com:6333") is True
+
+
+def test_public_ip_requires_key():
+    assert qdrant_requires_api_key("http://76.13.17.48:7333") is True
+
+
+def _run_with_env(extra_env: dict) -> subprocess.CompletedProcess:
+    env = {**os.environ, **extra_env}
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return subprocess.run(
+        [sys.executable, "-c", "from app.core.config import settings"],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+
+def test_process_actually_fails_to_start_with_public_url_and_no_key():
+    result = _run_with_env({
+        "QDRANT_URL": "http://qdrant.example.com:6333",
+        "QDRANT_API_KEY": "",
+    })
+    assert result.returncode != 0
+    assert "QDRANT_API_KEY" in result.stderr
+
+
+def test_process_starts_fine_with_public_url_and_a_key():
+    result = _run_with_env({
+        "QDRANT_URL": "http://qdrant.example.com:6333",
+        "QDRANT_API_KEY": "real-key-abc",
+    })
+    assert result.returncode == 0, result.stderr
+
+
+def test_process_starts_fine_with_localhost_and_no_key():
+    result = _run_with_env({
+        "QDRANT_URL": "http://localhost:6333",
+        "QDRANT_API_KEY": "",
+    })
+    assert result.returncode == 0, result.stderr

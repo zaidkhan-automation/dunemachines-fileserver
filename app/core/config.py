@@ -66,4 +66,25 @@ class Settings(BaseSettings):
         except FileNotFoundError:
             return self.GITHUB_APP_PRIVATE_KEY
 
+def qdrant_requires_api_key(qdrant_url: str) -> bool:
+    """True if `qdrant_url` isn't one of the addresses treated as safe to
+    reach without an API key (localhost/127.0.0.1/a unix socket) — a
+    pure, directly-testable predicate for the startup guard below."""
+    is_local = (
+        "localhost" in qdrant_url
+        or "127.0.0.1" in qdrant_url
+        or qdrant_url.startswith("unix://")
+    )
+    return not is_local
+
+
 settings = Settings()
+
+# Finding #8 (security audit, 2026-08), revised to hard-fail: confirmed via
+# live netstat that Qdrant is genuinely reachable on a non-localhost
+# address with no auth — a warning wasn't enough once that was verified,
+# not just theoretical.
+if qdrant_requires_api_key(settings.QDRANT_URL) and not settings.QDRANT_API_KEY:
+    raise RuntimeError(
+        "QDRANT_URL is non-localhost but QDRANT_API_KEY is unset — Qdrant is exposed without auth"
+    )
