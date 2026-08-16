@@ -1,13 +1,14 @@
 """
 Upload endpoints — signed URL based upload flow.
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Dict, Any
 from app.services.uploads.upload_service import upload_service
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import get_current_user
+from app.core.rate_limit import limiter
 from app.services.permissions.rbac import require_permission
 from app.repositories.asset_repo import asset_repo
 from app.events.producers import publish_upload_complete, publish_event
@@ -29,12 +30,38 @@ class InitUploadRequest(BaseModel):
     @field_validator("mime_type")
     @classmethod
     def validate_mime_type(cls, v: str) -> str:
+        # Normalize before comparing against the allowlist — a client can
+        # send "TEXT/PLAIN; charset=utf-8", semantically identical to
+        # "text/plain" but a literal-string allowlist match would reject
+        # it. Returns the normalized form so downstream storage/DB use is
+        # consistent too, not just the allowlist check.
+        normalized = v.strip().lower().split(";", 1)[0].strip()
         # ALLOWED_MIME_TYPES defaults to [] — empty means "not configured,
         # no restriction", preserving today's fully-permissive behavior
         # until an operator actually opts into an allowlist.
-        if settings.ALLOWED_MIME_TYPES and v not in settings.ALLOWED_MIME_TYPES:
+        if settings.ALLOWED_MIME_TYPES and normalized not in settings.ALLOWED_MIME_TYPES:
             raise ValueError(f"mime_type '{v}' is not in the allowed list")
-        return v
+        return normalized
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, v: str) -> str:
+        # filename flows unsanitized into the S3 object key
+        # (orgs/{org}/assets/{id}/{filename}) and into a literal
+        # Content-Disposition response header on download — strip path
+        # separators/traversal segments and control/quote characters so
+        # neither of those two contexts can be manipulated by a crafted
+        # filename. Keep just the basename, matching what every real
+        # client actually needs (a display name), not a path.
+        import re
+
+        base = v.replace("\\", "/").rsplit("/", 1)[-1].strip()
+        base = base.replace("..", "")
+        base = re.sub(r'[\x00-\x1f\x7f"]', "", base)
+        base = base.strip()
+        if not base:
+            raise ValueError("filename is empty after sanitization")
+        return base
 
 
 class CompleteUploadRequest(BaseModel):
@@ -43,7 +70,9 @@ class CompleteUploadRequest(BaseModel):
 
 
 @router.post("/init", status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute")
 async def init_upload(
+    request: Request,
     req: InitUploadRequest,
     db: AsyncSession = Depends(get_db),
     user: Dict = Depends(require_permission("assets", "upload")),
@@ -119,7 +148,9 @@ async def init_upload(
 
 
 @router.post("/{upload_id}/complete")
+@limiter.limit("5/minute")
 async def complete_upload(
+    request: Request,
     upload_id: str,
     req: CompleteUploadRequest,
     db: AsyncSession = Depends(get_db),
@@ -201,7 +232,9 @@ async def complete_upload(
 
 
 @router.get("/{upload_id}/download-url")
+@limiter.limit("50/minute")
 async def get_download_url(
+    request: Request,
     upload_id: str,
     db: AsyncSession = Depends(get_db),
     user: Dict = Depends(get_current_user),
