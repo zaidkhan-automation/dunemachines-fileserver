@@ -172,6 +172,24 @@ async def semantic_search(
             score_threshold=score_threshold,
         )
 
+        # Isolation here is structural — each org has its own Qdrant
+        # collection (_collection_name(org_id)), not a shared index
+        # filtered by an org_id field — so a cross-org result shouldn't
+        # be reachable at all. This assertion is a defense-in-depth
+        # backstop, not the actual isolation mechanism: it'd only catch a
+        # future bug (e.g. a collection name collision or reuse) rather
+        # than something expected to fire under normal operation.
+        points = []
+        for r in results.points:
+            point_org = r.payload.get("org_id")
+            if point_org is not None and point_org != org_id:
+                logger.error(
+                    f"Cross-org search result dropped: point org_id={point_org} "
+                    f"!= requested org_id={org_id} in collection {_collection_name(org_id)}"
+                )
+                continue
+            points.append(r)
+
         return [
             {
                 "asset_id": r.payload.get("asset_id"),
@@ -182,7 +200,7 @@ async def semantic_search(
                 "tags": r.payload.get("tags", []),
                 "text_preview": r.payload.get("text_preview", ""),
             }
-            for r in results.points
+            for r in points
         ]
     except Exception as e:
         logger.error(f"Semantic search failed: {e}")
