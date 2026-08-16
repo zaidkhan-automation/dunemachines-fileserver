@@ -46,7 +46,7 @@ _ORG_ROLE_TO_FILESERVER_ROLE = {
 }
 
 
-async def resolve_identity(payload: Dict[str, Any]) -> Dict[str, Any]:
+async def resolve_identity(payload: Dict[str, Any], trust_claims: bool = True) -> Dict[str, Any]:
     """Derive a stable (user_id, org_id, roles) triple from a decoded
     JWT payload.
 
@@ -58,8 +58,19 @@ async def resolve_identity(payload: Dict[str, Any]) -> Dict[str, Any]:
     user_active_org (by the token's numeric "uid" claim, or its numeric
     "sub" for dunemachines_backend-minted agent tokens) — so a user
     switching org takes effect on their very next request, no new token
-    needed — then the token's own org_id claim as a fail-open fallback
-    for when that lookup can't reach omnius_db, then per-sub derivation.
+    needed — then, ONLY when trust_claims is True, the token's own
+    org_id claim as a fail-open fallback for when that lookup can't
+    reach omnius_db, then per-sub derivation.
+
+    trust_claims must be False for any token whose issuer claim marks it
+    as bridged-in from another service (currently "omnius_backend" —
+    dunemachines_backend's fileserver_sync.mint_fileserver_token, which
+    shares this service's JWT_SECRET for that one bridge). Those claims
+    are computed honestly by the minting side, but the raw JWT bytes
+    alone can't prove that once a secret is shared across services — so
+    for those tokens org_id must come only from the live DB lookup (or
+    its safe per-user derivation), never from the claim itself. See
+    get_current_user for the roles-claim half of this same rule.
 
     roles: a live lookup against omnius_db's organization_members for
     the same (numeric_uid, org_id) pair, mapped through
@@ -84,7 +95,8 @@ async def resolve_identity(payload: Dict[str, Any]) -> Dict[str, Any]:
         from app.core.omnius_client import get_active_org_id
         org_id = await get_active_org_id(int(numeric_uid))
 
-    org_id = org_id or payload.get("org_id") or (
+    claimed_org_id = payload.get("org_id") if trust_claims else None
+    org_id = org_id or claimed_org_id or (
         str(uuid.uuid5(_BRIDGED_ORG_NAMESPACE, sub)) if sub else "00000000-0000-0000-0000-000000000001"
     )
 
@@ -103,6 +115,7 @@ async def resolve_identity(payload: Dict[str, Any]) -> Dict[str, Any]:
 def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.setdefault("issuer", "fileserver")  # self-issued — safe to trust its own roles/org_id claims
     to_encode.update({"exp": expire, "iat": datetime.utcnow()})
     return jwt.encode(to_encode, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
@@ -138,18 +151,28 @@ async def get_current_user(
     # Try native token
     try:
         payload = decode_token(token)
-        identity = await resolve_identity(payload)
+        # This service's own JWT_SECRET is also shared with
+        # dunemachines_backend for the agent-sync bridge
+        # (fileserver_sync.mint_fileserver_token) — a token decoding
+        # successfully here is NOT proof it was self-issued. Only trust
+        # its roles/org_id claims when issuer says so; "omnius_backend"
+        # (bridged) must always fall through to the live DB lookup
+        # instead, even though that lookup is itself fail-open on a DB
+        # outage — never trusting an untrusted claim as the fallback.
+        trust_claims = payload.get("issuer") != "omnius_backend"
+        identity = await resolve_identity(payload, trust_claims=trust_claims)
+        claimed_roles = payload.get("roles") if trust_claims else None
         return {
             "user_id": identity["user_id"],
             "org_id": identity["org_id"],
             "email": payload.get("email", ""),
-            # A token's own roles claim (native file-server tokens, and
-            # dunemachines_backend's mint_fileserver_token agent tokens)
-            # always wins — it's an explicit grant. Only a truly bare
-            # Duniverse-bridged token (no roles claim at all) falls
-            # through to the live org-role lookup, then the blanket
-            # default if that lookup found nothing either.
-            "roles": payload.get("roles") or identity.get("roles") or DEFAULT_BRIDGED_ROLES,
+            # A trusted token's own roles claim (native file-server
+            # tokens, i.e. issuer == "fileserver" or absent) always
+            # wins — it's an explicit grant. A bridged token (issuer ==
+            # "omnius_backend") or a bare Duniverse-bridged token (no
+            # roles claim at all) falls through to the live org-role
+            # lookup, then the blanket default if that found nothing.
+            "roles": claimed_roles or identity.get("roles") or DEFAULT_BRIDGED_ROLES,
             "source": "native",
         }
     except HTTPException:
@@ -158,12 +181,14 @@ async def get_current_user(
     # Try Duniverse token
     try:
         payload = decode_duniverse_token(token)
-        identity = await resolve_identity(payload)
+        trust_claims = payload.get("issuer") != "omnius_backend"
+        identity = await resolve_identity(payload, trust_claims=trust_claims)
+        claimed_roles = payload.get("roles") if trust_claims else None
         return {
             "user_id": identity["user_id"],
             "org_id": identity["org_id"],
             "email": payload.get("email", ""),
-            "roles": payload.get("roles") or identity.get("roles") or DEFAULT_BRIDGED_ROLES,
+            "roles": claimed_roles or identity.get("roles") or DEFAULT_BRIDGED_ROLES,
             "source": "duniverse",
         }
     except HTTPException:
