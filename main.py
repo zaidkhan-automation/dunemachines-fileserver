@@ -12,9 +12,13 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.encoders import jsonable_encoder
 
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.core.events import on_startup, on_shutdown
+from app.core.rate_limit import limiter
 from app.api.rest.uploads import router as uploads_router
 from app.api.rest.files import router as assets_router
 from app.api.rest.folders import router as folders_router
@@ -45,6 +49,9 @@ app = FastAPI(
     redoc_url="/redoc" if settings.DEBUG else None,
     lifespan=lifespan,
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── Middleware ────────────────────────────────────────────────────
 app.add_middleware(GZipMiddleware, minimum_size=1000)
