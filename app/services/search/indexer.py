@@ -20,8 +20,36 @@ _client: Optional[AsyncQdrantClient] = None
 def get_qdrant() -> AsyncQdrantClient:
     global _client
     if _client is None:
-        _client = AsyncQdrantClient(url=settings.QDRANT_URL, check_compatibility=False)
+        if not settings.QDRANT_API_KEY and not _looks_private(settings.QDRANT_URL):
+            # Not a hard fail — this exact (public-looking IP, no API key)
+            # configuration may already be firewalled at the network
+            # level, which this process has no way to observe. Loud
+            # warning instead of raising, so a legitimately-firewalled
+            # deployment doesn't get broken by this check.
+            logger.warning(
+                f"QDRANT_URL ({settings.QDRANT_URL}) is not a private/localhost address and "
+                "QDRANT_API_KEY is unset — confirm this is firewalled at the network level; "
+                "otherwise every org's asset embeddings are readable/writable unauthenticated."
+            )
+        _client = AsyncQdrantClient(
+            url=settings.QDRANT_URL,
+            api_key=settings.QDRANT_API_KEY or None,
+            check_compatibility=False,
+        )
     return _client
+
+
+def _looks_private(url: str) -> bool:
+    import ipaddress
+    from urllib.parse import urlparse
+
+    host = urlparse(url).hostname or ""
+    if host in ("localhost",) or host.endswith(".local"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_private
+    except ValueError:
+        return False
 
 
 def _collection_name(org_id: str) -> str:

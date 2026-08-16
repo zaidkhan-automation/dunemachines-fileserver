@@ -37,6 +37,7 @@ class Settings(BaseSettings):
 
     # Qdrant
     QDRANT_URL: str = "http://76.13.17.48:7333"
+    QDRANT_API_KEY: Optional[str] = None
 
     # File limits
     MAX_FILE_SIZE_MB: int = 500
