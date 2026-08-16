@@ -331,9 +331,12 @@ def require_permission(resource: str, action: str):
 
     async def check(user: dict = Depends(get_current_user)):
         if not check_permission(user, resource, action):
+            # Generic message — the specific resource:action being checked
+            # isn't attacker-actionable info exactly, but there's no
+            # reason to hand it over either.
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Permission denied: {resource}:{action}"
+                detail="Forbidden"
             )
         return user
 
@@ -349,7 +352,7 @@ def require_any_permission(*perms):
         if not check_any_permission(user, *perms):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Permission denied. Required one of: {perms}"
+                detail="Forbidden"
             )
         return user
 
