@@ -5,9 +5,10 @@ from app.models.project import Project
 from app.models.permission import Permission
 from app.models.version import Version
 from app.models.embedding import Embedding
+from app.models.presentation_link import PresentationLink
 
 __all__ = [
     "Asset", "AssetType", "AssetStatus", "SourceType",
     "User", "Organization", "Project",
-    "Permission", "Version", "Embedding",
+    "Permission", "Version", "Embedding", "PresentationLink",
 ]

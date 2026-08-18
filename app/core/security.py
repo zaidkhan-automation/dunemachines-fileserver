@@ -4,6 +4,7 @@ JWT authentication — supports both Duniverse tokens and native file server tok
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
+import bcrypt
 from jose import JWTError, jwt
 from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -205,6 +206,46 @@ async def get_current_user(
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+# ── Password hashing (presentation-link password protection) ───────────
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+    except ValueError:
+        # Malformed/foreign hash — fail closed, not an exception.
+        return False
+
+
+# ── Short-lived presentation-link unlock tokens ─────────────────────────
+# Scoped tightly to one link's token so an unlock JWT for link A can never
+# be replayed against link B — the resolve endpoint checks link_token
+# against the URL's own {token} path param, not just signature validity.
+
+_UNLOCK_TOKEN_SCOPE = "presentation_unlock"
+_UNLOCK_TOKEN_TTL = timedelta(minutes=5)
+
+
+def create_unlock_token(link_token: str) -> str:
+    expire = datetime.utcnow() + _UNLOCK_TOKEN_TTL
+    return jwt.encode(
+        {"scope": _UNLOCK_TOKEN_SCOPE, "link_token": link_token, "exp": expire},
+        settings.JWT_SECRET,
+        algorithm=settings.JWT_ALGORITHM,
+    )
+
+
+def verify_unlock_token(unlock_token: str, link_token: str) -> bool:
+    try:
+        payload = jwt.decode(unlock_token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+    except JWTError:
+        return False
+    return payload.get("scope") == _UNLOCK_TOKEN_SCOPE and payload.get("link_token") == link_token
 
 
 # Optional auth — doesn't raise if no token

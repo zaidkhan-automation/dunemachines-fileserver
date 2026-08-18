@@ -26,6 +26,7 @@ from app.api.rest.projects import router as projects_router
 from app.api.rest.auth import router as auth_router
 from app.api.rest.connectors import router as connectors_router
 from app.api.rest.permissions import router as permissions_router
+from app.api.rest.presentation_links import router as presentation_links_router, public_router as presentation_links_public_router
 from app.connectors.github.webhook_handler import router as github_webhook_router
 from app.api.graphql.schema import graphql_router
 from app.api.ws.collaboration import router as ws_router, manager as ws_manager
@@ -100,6 +101,8 @@ app.include_router(folders_router,  prefix=PREFIX)
 app.include_router(projects_router, prefix=PREFIX)
 app.include_router(connectors_router, prefix=PREFIX)
 app.include_router(permissions_router, prefix=PREFIX)
+app.include_router(presentation_links_router, prefix=PREFIX)
+app.include_router(presentation_links_public_router, prefix=PREFIX)
 app.include_router(github_webhook_router, prefix="/api/v1")
 app.include_router(graphql_router, prefix="/graphql")
 app.include_router(ws_router)

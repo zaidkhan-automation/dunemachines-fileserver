@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     QDRANT_URL: str = "http://76.13.17.48:7333"
     QDRANT_API_KEY: Optional[str] = None
 
+    # Public web app base URL — used to build shareable presentation-link
+    # URLs (https://{PUBLIC_APP_URL}/p/{token}). No existing setting covered
+    # this (STORAGE_PUBLIC_ENDPOINT is the CDN/object-storage domain, not
+    # the web app).
+    PUBLIC_APP_URL: str = "https://app.dunemachines.com"
+
     # File limits
     MAX_FILE_SIZE_MB: int = 500
     ALLOWED_MIME_TYPES: list = []
