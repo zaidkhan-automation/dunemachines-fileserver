@@ -6,7 +6,7 @@ the SQLAlchemy ORM model lives in app/models/presentation_link.py,
 matching this codebase's existing models/ (ORM) vs schemas/ (Pydantic)
 split (see Asset vs AssetResponse).
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -29,9 +29,20 @@ class CreateLinkRequest(BaseModel):
     @classmethod
     def validate_future(cls, v: Optional[datetime]) -> Optional[datetime]:
         if v is not None:
-            # Accept both naive and tz-aware input; compare in UTC.
-            now = datetime.utcnow() if v.tzinfo is None else datetime.now(v.tzinfo)
-            if v <= now:
+            # Accept both naive and tz-aware input; compare in UTC, then
+            # normalize to a naive UTC datetime before it goes anywhere
+            # else. presentation_links.expires_at is TIMESTAMP WITHOUT
+            # TIME ZONE (matching every other timestamp column in this
+            # codebase, all populated via naive datetime.utcnow()) —
+            # asyncpg raises DataError on a tz-aware value there (confirmed
+            # live: a client-sent "...Z" ISO string parses to a tz-aware
+            # datetime and 500'd the create-link endpoint before this fix).
+            if v.tzinfo is not None:
+                now = datetime.now(v.tzinfo)
+                if v <= now:
+                    raise ValueError("expiresAt must be in the future")
+                v = v.astimezone(timezone.utc).replace(tzinfo=None)
+            elif v <= datetime.utcnow():
                 raise ValueError("expiresAt must be in the future")
         return v
 
