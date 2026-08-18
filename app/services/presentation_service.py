@@ -17,8 +17,10 @@ snapshot would silently change under a viewer's feet the next time the
 source file was edited. Live mode instead re-reads the asset's current
 blob_ref on every resolve, so it does reflect later edits/deletion.
 """
+import logging
 import re
 import secrets
+import time
 import uuid
 from datetime import datetime
 from typing import Optional, Dict, Any
@@ -30,6 +32,8 @@ from app.core.config import settings
 from app.models.version import Version
 from app.repositories.asset_repo import asset_repo
 from app.repositories.presentation_link_repo import presentation_link_repo
+
+logger = logging.getLogger(__name__)
 
 # ??? ... ??? speaker-note fences. DOTALL so a note body may span multiple
 # lines; non-greedy so back-to-back note blocks don't merge into one match.
@@ -121,29 +125,42 @@ async def create_link(
     from app.core.security import hash_password
     from datetime import timedelta
 
+    t_start = time.perf_counter()
+    timings: Dict[str, float] = {}
+
     created_by_uuid = uuid.UUID(str(user_id)) if _is_uuid(user_id) else uuid.uuid5(uuid.NAMESPACE_URL, str(user_id))
 
+    t0 = time.perf_counter()
     recent_count = await presentation_link_repo.count_created_since(
         db, str(created_by_uuid), datetime.utcnow() - timedelta(hours=1)
     )
+    timings["rate_limit_check_ms"] = (time.perf_counter() - t0) * 1000
     if recent_count >= CREATE_LINK_HOURLY_QUOTA:
         raise RateLimitedError(f"Rate limit exceeded: max {CREATE_LINK_HOURLY_QUOTA} links per hour")
 
+    t0 = time.perf_counter()
     asset = await asset_repo.get_by_id(db, file_id, org_id)
+    timings["asset_lookup_ms"] = (time.perf_counter() - t0) * 1000
     if asset is None:
         return None
     if not _is_markdown_asset(asset):
         raise NotMarkdownError("Only markdown (.md) files can be shared as presentation links")
 
+    t0 = time.perf_counter()
     token = await _generate_unique_token(db)
+    timings["token_gen_ms"] = (time.perf_counter() - t0) * 1000
     revision_id = None
 
+    timings["snapshot_copy_ms"] = 0.0
     if mode == "snapshot":
         if not asset.blob_ref:
             raise PresentationLinkError("File has no content to snapshot")
         version_id = uuid.uuid4()
         snapshot_key = f"orgs/{org_id}/presentation-snapshots/{version_id}/{asset.name}"
+
+        t0 = time.perf_counter()
         await _copy_object(asset.blob_ref, snapshot_key)
+        timings["snapshot_copy_ms"] = (time.perf_counter() - t0) * 1000
 
         version = Version(
             id=version_id,
@@ -158,9 +175,14 @@ async def create_link(
             extra_data={"source_blob_ref": asset.blob_ref, "presentation_snapshot": True},
         )
         db.add(version)
+        t0 = time.perf_counter()
         await db.flush()
+        timings["version_insert_ms"] = (time.perf_counter() - t0) * 1000
         revision_id = version_id
+    else:
+        timings["version_insert_ms"] = 0.0
 
+    t0 = time.perf_counter()
     link = await presentation_link_repo.create(db, {
         "file_id": file_id,
         "created_by": str(created_by_uuid),
@@ -172,6 +194,17 @@ async def create_link(
         "password_hash": hash_password(password) if password else None,
         "options": options,
     })
+    timings["link_insert_ms"] = (time.perf_counter() - t0) * 1000
+
+    timings["total_ms"] = (time.perf_counter() - t_start) * 1000
+    logger.info(
+        "[presentation_link] create mode=%s size_bytes=%s total=%.1fms "
+        "rate_limit=%.1fms asset_lookup=%.1fms token_gen=%.1fms "
+        "snapshot_copy=%.1fms version_insert=%.1fms link_insert=%.1fms",
+        mode, asset.size_bytes, timings["total_ms"],
+        timings["rate_limit_check_ms"], timings["asset_lookup_ms"], timings["token_gen_ms"],
+        timings["snapshot_copy_ms"], timings["version_insert_ms"], timings["link_insert_ms"],
+    )
     return link
 
 
@@ -196,7 +229,11 @@ class ResolveResult:
 async def resolve_link(db: AsyncSession, token: str, unlock_token: Optional[str] = None) -> ResolveResult:
     from app.core.security import verify_unlock_token
 
+    t_start = time.perf_counter()
+
+    t0 = time.perf_counter()
     link = await presentation_link_repo.get_by_token(db, token)
+    token_lookup_ms = (time.perf_counter() - t0) * 1000
     if link is None:
         return ResolveResult(ResolveResult.NOT_FOUND)
     if link.revoked_at is not None:
@@ -211,6 +248,7 @@ async def resolve_link(db: AsyncSession, token: str, unlock_token: Optional[str]
     object_key = None
     file_name = None
 
+    t0 = time.perf_counter()
     if link.mode == "snapshot":
         if link.revision_id is None:
             return ResolveResult(ResolveResult.NOT_FOUND)
@@ -237,13 +275,30 @@ async def resolve_link(db: AsyncSession, token: str, unlock_token: Optional[str]
             return ResolveResult(ResolveResult.NOT_FOUND)
         object_key = asset.blob_ref
         file_name = asset.name
+    metadata_lookup_ms = (time.perf_counter() - t0) * 1000
 
+    t0 = time.perf_counter()
     markdown = await _get_object_text(object_key)
+    fetch_ms = (time.perf_counter() - t0) * 1000
+
+    t0 = time.perf_counter()
     options = link.options or {}
     if options.get("hideSpeakerNotes"):
         markdown = strip_speaker_notes(markdown)
+    strip_ms = (time.perf_counter() - t0) * 1000
 
+    t0 = time.perf_counter()
     await presentation_link_repo.record_access(db, link.id)
+    access_count_ms = (time.perf_counter() - t0) * 1000
+
+    total_ms = (time.perf_counter() - t_start) * 1000
+    logger.info(
+        "[presentation_link] resolve mode=%s content_chars=%d total=%.1fms "
+        "token_lookup=%.1fms metadata_lookup=%.1fms s3_fetch=%.1fms "
+        "speaker_note_strip=%.1fms access_count_update=%.1fms",
+        link.mode, len(markdown), total_ms,
+        token_lookup_ms, metadata_lookup_ms, fetch_ms, strip_ms, access_count_ms,
+    )
 
     return ResolveResult(ResolveResult.OK, {
         "title": link.title,
