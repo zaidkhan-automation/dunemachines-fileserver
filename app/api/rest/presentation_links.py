@@ -150,9 +150,27 @@ async def revoke_presentation_link(
     user: Dict = Depends(get_current_user),
 ):
     """Revoke (soft-delete) a link. Restricted to its creator or an org
-    admin/owner."""
+    admin/owner OF THE SAME ORG THAT OWNS THE LINK'S FILE.
+
+    presentation_link_repo.get_by_id has no org filter at all (the link
+    row doesn't carry organization_id directly, only file_id), and a
+    requester's `roles` claim describes their OWN org membership, not
+    their relationship to this specific link — checking is_org_admin
+    against the raw claim let ANY org's owner/admin revoke ANY other
+    org's links (found live: an org-B owner successfully revoked an
+    org-A link with a 200). Fixed by resolving the link's actual org via
+    its asset, scoped to the REQUESTER's own org_id (same
+    asset_repo.get_by_id call list_presentation_links already uses
+    correctly) — a mismatch means "not found", not "forbidden", so this
+    can't be used to distinguish "exists in another org" from "doesn't
+    exist" either."""
     link = await presentation_link_repo.get_by_id(db, link_id)
     if link is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Link not found")
+
+    org_id = await _org_uuid_or_default(user["org_id"])
+    asset = await asset_repo.get_by_id(db, str(link.file_id), org_id)
+    if asset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Link not found")
 
     is_creator = str(link.created_by) == str(_user_uuid(user["user_id"]))

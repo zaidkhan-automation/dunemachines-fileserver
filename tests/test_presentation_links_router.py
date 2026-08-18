@@ -188,6 +188,93 @@ def test_unlock_rate_limited_after_10_per_hour_per_token():
         app.dependency_overrides.clear()
 
 
+def test_revoke_cross_org_admin_cannot_revoke_another_orgs_link():
+    """Regression test for a real bug caught via live testing: an org-B
+    owner/admin could revoke an org-A link with a 200, because the old
+    is_org_admin check used the requester's own roles claim without ever
+    confirming the link's file belongs to their org. asset_repo.get_by_id
+    is scoped by the REQUESTER's org_id — for a cross-org link it must
+    return None, which the endpoint now maps to 404 before any
+    creator/admin check runs at all."""
+    client = TestClient(app)
+    app.dependency_overrides[get_current_user] = lambda: {
+        "user_id": "22222222-2222-2222-2222-222222222222", "org_id": "org-B", "roles": ["owner"],
+    }
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    fake_link = SimpleNamespace(
+        id="link-1", file_id="file-in-org-a", created_by="11111111-1111-1111-1111-111111111111",
+    )
+    try:
+        with patch(
+            "app.api.rest.presentation_links.presentation_link_repo.get_by_id",
+            new=AsyncMock(return_value=fake_link),
+        ), patch(
+            "app.api.rest.presentation_links.asset_repo.get_by_id",
+            new=AsyncMock(return_value=None),  # not found in org-B, the requester's own org
+        ) as mock_asset_lookup, patch(
+            "app.api.rest.presentation_links.presentation_link_repo.revoke",
+            new=AsyncMock(side_effect=AssertionError("must never reach revoke() for a cross-org link")),
+        ):
+            r = client.delete("/api/v1/presentation-links/link-1")
+        assert r.status_code == 404
+        mock_asset_lookup.assert_awaited_once()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_revoke_same_org_admin_can_revoke_even_if_not_creator():
+    client = TestClient(app)
+    app.dependency_overrides[get_current_user] = lambda: {
+        "user_id": "22222222-2222-2222-2222-222222222222", "org_id": "org-A", "roles": ["admin"],
+    }
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    fake_link = SimpleNamespace(
+        id="link-1", file_id="file-in-org-a", created_by="11111111-1111-1111-1111-111111111111",
+        revoked_at="2026-08-18T00:00:00",
+    )
+    try:
+        with patch(
+            "app.api.rest.presentation_links.presentation_link_repo.get_by_id",
+            new=AsyncMock(return_value=fake_link),
+        ), patch(
+            "app.api.rest.presentation_links.asset_repo.get_by_id",
+            new=AsyncMock(return_value=SimpleNamespace(id="file-in-org-a")),  # found: same org
+        ), patch(
+            "app.api.rest.presentation_links.presentation_link_repo.revoke",
+            new=AsyncMock(return_value=fake_link),
+        ):
+            r = client.delete("/api/v1/presentation-links/link-1")
+        assert r.status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_revoke_same_org_non_creator_non_admin_gets_403_not_200():
+    client = TestClient(app)
+    app.dependency_overrides[get_current_user] = lambda: {
+        "user_id": "33333333-3333-3333-3333-333333333333", "org_id": "org-A", "roles": ["editor"],
+    }
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    fake_link = SimpleNamespace(
+        id="link-1", file_id="file-in-org-a", created_by="11111111-1111-1111-1111-111111111111",
+    )
+    try:
+        with patch(
+            "app.api.rest.presentation_links.presentation_link_repo.get_by_id",
+            new=AsyncMock(return_value=fake_link),
+        ), patch(
+            "app.api.rest.presentation_links.asset_repo.get_by_id",
+            new=AsyncMock(return_value=SimpleNamespace(id="file-in-org-a")),  # same org, but not creator/admin
+        ), patch(
+            "app.api.rest.presentation_links.presentation_link_repo.revoke",
+            new=AsyncMock(side_effect=AssertionError("must never reach revoke() without permission")),
+        ):
+            r = client.delete("/api/v1/presentation-links/link-1")
+        assert r.status_code == 403
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_unlock_rate_limit_is_per_token_not_shared_globally():
     """Two different link tokens each get their own 10/hour bucket
     (key_func combines IP+token) — probing token A up to its limit must
