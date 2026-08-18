@@ -7,6 +7,8 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+_pool_monitor_task: asyncio.Task | None = None
+
 
 async def on_startup():
     logger.info(f"Starting {settings.APP_NAME} v{settings.VERSION}")
@@ -17,11 +19,16 @@ async def on_startup():
     await _start_event_consumer()
     # Warm up embedding model in background — avoids first-request timeout
     asyncio.create_task(_warmup_models())
+    global _pool_monitor_task
+    from app.core.database import log_pool_status_periodically
+    _pool_monitor_task = asyncio.create_task(log_pool_status_periodically())
     logger.info("All services initialized ✅")
 
 
 async def on_shutdown():
     logger.info("Shutting down services...")
+    if _pool_monitor_task:
+        _pool_monitor_task.cancel()
     from app.core.redis import close_redis
     await close_redis()
     logger.info("Shutdown complete")
