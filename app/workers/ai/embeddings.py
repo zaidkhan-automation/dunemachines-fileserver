@@ -34,18 +34,12 @@ def _extract_pdf_text_sync(content: bytes) -> str:
 async def extract_text_from_asset(object_key: str, mime_type: str) -> Optional[str]:
     """Extract text from asset based on mime type."""
     try:
-        import aioboto3
         from app.core.config import settings
+        from app.core.s3_client import get_s3_client
 
-        session = aioboto3.Session()
-        async with session.client(
-            "s3",
-            endpoint_url=settings.STORAGE_ENDPOINT,
-            aws_access_key_id=settings.STORAGE_ACCESS_KEY,
-            aws_secret_access_key=settings.STORAGE_SECRET_KEY,
-        ) as s3:
-            response = await s3.get_object(Bucket=settings.STORAGE_BUCKET, Key=object_key)
-            content = await response["Body"].read()
+        s3 = get_s3_client()
+        response = await s3.get_object(Bucket=settings.STORAGE_BUCKET, Key=object_key)
+        content = await response["Body"].read()
 
         if mime_type == "application/pdf":
             try:

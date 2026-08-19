@@ -222,15 +222,10 @@ async def _delete_blob_from_storage(blob_ref: Optional[str]):
     if not blob_ref:
         return
     try:
-        import aioboto3
         from app.core.config import settings
-        session = aioboto3.Session()
-        async with session.client(
-            "s3", endpoint_url=settings.STORAGE_ENDPOINT,
-            aws_access_key_id=settings.STORAGE_ACCESS_KEY,
-            aws_secret_access_key=settings.STORAGE_SECRET_KEY,
-        ) as s3:
-            await s3.delete_object(Bucket=settings.STORAGE_BUCKET, Key=blob_ref)
+        from app.core.s3_client import get_s3_client
+        s3 = get_s3_client()
+        await s3.delete_object(Bucket=settings.STORAGE_BUCKET, Key=blob_ref)
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"Failed to delete blob {blob_ref}: {e}")

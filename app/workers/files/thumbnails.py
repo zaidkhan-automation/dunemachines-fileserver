@@ -38,22 +38,16 @@ async def generate_thumbnail(content: bytes, mime_type: str) -> bytes:
 async def upload_thumbnail(asset_id: str, thumbnail: bytes):
     """Upload thumbnail to MinIO."""
     try:
-        import aioboto3
         from app.core.config import settings
+        from app.core.s3_client import get_s3_client
 
-        session = aioboto3.Session()
-        async with session.client(
-            "s3",
-            endpoint_url=settings.STORAGE_ENDPOINT,
-            aws_access_key_id=settings.STORAGE_ACCESS_KEY,
-            aws_secret_access_key=settings.STORAGE_SECRET_KEY,
-        ) as s3:
-            await s3.put_object(
-                Bucket=settings.STORAGE_BUCKET,
-                Key=f"thumbnails/{asset_id}.jpg",
-                Body=thumbnail,
-                ContentType="image/jpeg",
-            )
+        s3 = get_s3_client()
+        await s3.put_object(
+            Bucket=settings.STORAGE_BUCKET,
+            Key=f"thumbnails/{asset_id}.jpg",
+            Body=thumbnail,
+            ContentType="image/jpeg",
+        )
         logger.info(f"Thumbnail uploaded for asset {asset_id}")
     except Exception as e:
         logger.error(f"Thumbnail upload failed: {e}")
@@ -78,17 +72,11 @@ async def handle_thumbnail_generation(payload: dict):
             if not asset or not asset.mime_type or not asset.mime_type.startswith("image/"):
                 return
 
-            import aioboto3
             from app.core.config import settings
-            session = aioboto3.Session()
-            async with session.client(
-                "s3",
-                endpoint_url=settings.STORAGE_ENDPOINT,
-                aws_access_key_id=settings.STORAGE_ACCESS_KEY,
-                aws_secret_access_key=settings.STORAGE_SECRET_KEY,
-            ) as s3:
-                response = await s3.get_object(Bucket=settings.STORAGE_BUCKET, Key=object_key)
-                content = await response["Body"].read()
+            from app.core.s3_client import get_s3_client
+            s3 = get_s3_client()
+            response = await s3.get_object(Bucket=settings.STORAGE_BUCKET, Key=object_key)
+            content = await response["Body"].read()
 
             thumbnail = await generate_thumbnail(content, asset.mime_type)
             if thumbnail:

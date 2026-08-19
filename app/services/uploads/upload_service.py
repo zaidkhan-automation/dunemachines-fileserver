@@ -10,9 +10,8 @@ Flow:
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
-import aioboto3
-from botocore.config import Config
 from app.core.config import settings
+from app.core.s3_client import get_s3_client
 from app.models.asset import AssetType, AssetStatus
 
 # Defensive bounds on presigned-URL lifetime — no caller passes a value
@@ -29,7 +28,6 @@ def _clamp_expiry(expires_in: int) -> int:
 
 class UploadService:
     def __init__(self):
-        self.session = aioboto3.Session()
         self.bucket = settings.STORAGE_BUCKET
         self.endpoint = settings.STORAGE_ENDPOINT
 
@@ -89,45 +87,31 @@ class UploadService:
         params = {"Bucket": self.bucket, "Key": object_key}
         if filename:
             params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
-        async with self.session.client(
-            "s3", endpoint_url=self.endpoint,
-            aws_access_key_id=settings.STORAGE_ACCESS_KEY,
-            aws_secret_access_key=settings.STORAGE_SECRET_KEY,
-            config=Config(signature_version="s3v4"),
-        ) as s3:
-            url = await s3.generate_presigned_url("get_object", Params=params, ExpiresIn=expires_in)
-            public = settings.STORAGE_PUBLIC_ENDPOINT
-            if public and public != self.endpoint:
-                url = url.replace(self.endpoint, public)
-            return url
+        s3 = get_s3_client()
+        url = await s3.generate_presigned_url("get_object", Params=params, ExpiresIn=expires_in)
+        public = settings.STORAGE_PUBLIC_ENDPOINT
+        if public and public != self.endpoint:
+            url = url.replace(self.endpoint, public)
+        return url
 
     async def _generate_presigned_put(self, object_key: str, mime_type: str, expires_in: int = 3600) -> str:
         expires_in = _clamp_expiry(expires_in)
-        async with self.session.client(
-            "s3", endpoint_url=self.endpoint,
-            aws_access_key_id=settings.STORAGE_ACCESS_KEY,
-            aws_secret_access_key=settings.STORAGE_SECRET_KEY,
-            config=Config(signature_version="s3v4"),
-        ) as s3:
-            url = await s3.generate_presigned_url(
-                "put_object",
-                Params={"Bucket": self.bucket, "Key": object_key, "ContentType": mime_type},
-                ExpiresIn=expires_in,
-            )
-            # Replace internal endpoint with public endpoint for external clients
-            public = settings.STORAGE_PUBLIC_ENDPOINT
-            if public and public != self.endpoint:
-                url = url.replace(self.endpoint, public)
-            return url
+        s3 = get_s3_client()
+        url = await s3.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": self.bucket, "Key": object_key, "ContentType": mime_type},
+            ExpiresIn=expires_in,
+        )
+        # Replace internal endpoint with public endpoint for external clients
+        public = settings.STORAGE_PUBLIC_ENDPOINT
+        if public and public != self.endpoint:
+            url = url.replace(self.endpoint, public)
+        return url
 
     async def _verify_object_exists(self, object_key: str) -> bool:
         try:
-            async with self.session.client(
-                "s3", endpoint_url=self.endpoint,
-                aws_access_key_id=settings.STORAGE_ACCESS_KEY,
-                aws_secret_access_key=settings.STORAGE_SECRET_KEY,
-            ) as s3:
-                await s3.head_object(Bucket=self.bucket, Key=object_key)
+            s3 = get_s3_client()
+            await s3.head_object(Bucket=self.bucket, Key=object_key)
             return True
         except Exception:
             return False

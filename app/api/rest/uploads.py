@@ -185,22 +185,18 @@ async def complete_upload(
     # Verify actual object checksum matches what client claims
     if req.checksum:
         try:
-            import aioboto3, hashlib
+            import hashlib
             from app.core.config import settings
-            session = aioboto3.Session()
-            async with session.client(
-                "s3", endpoint_url=settings.STORAGE_ENDPOINT,
-                aws_access_key_id=settings.STORAGE_ACCESS_KEY,
-                aws_secret_access_key=settings.STORAGE_SECRET_KEY,
-            ) as s3:
-                response = await s3.get_object(Bucket="dunemachines-files", Key=req.object_key)
-                content = await response["Body"].read()
-                actual_checksum = hashlib.sha256(content).hexdigest()
-                if actual_checksum != req.checksum:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=f"Checksum mismatch — file may be corrupted during upload"
-                    )
+            from app.core.s3_client import get_s3_client
+            s3 = get_s3_client()
+            response = await s3.get_object(Bucket=settings.STORAGE_BUCKET, Key=req.object_key)
+            content = await response["Body"].read()
+            actual_checksum = hashlib.sha256(content).hexdigest()
+            if actual_checksum != req.checksum:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Checksum mismatch — file may be corrupted during upload"
+                )
         except HTTPException:
             raise
         except Exception as e:

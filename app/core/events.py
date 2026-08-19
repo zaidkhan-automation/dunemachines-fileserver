@@ -31,6 +31,8 @@ async def on_shutdown():
         _pool_monitor_task.cancel()
     from app.core.redis import close_redis
     await close_redis()
+    from app.core.s3_client import close_s3_client
+    await close_s3_client()
     logger.info("Shutdown complete")
 
 
@@ -55,21 +57,15 @@ async def _init_redis():
 
 async def _init_storage():
     try:
-        import aioboto3
-        from app.core.config import settings
-        session = aioboto3.Session()
-        async with session.client(
-            "s3",
-            endpoint_url=settings.STORAGE_ENDPOINT,
-            aws_access_key_id=settings.STORAGE_ACCESS_KEY,
-            aws_secret_access_key=settings.STORAGE_SECRET_KEY,
-        ) as s3:
-            buckets = await s3.list_buckets()
-            bucket_names = [b["Name"] for b in buckets.get("Buckets", [])]
-            if settings.STORAGE_BUCKET not in bucket_names:
-                await s3.create_bucket(Bucket=settings.STORAGE_BUCKET)
-                logger.info(f"Created bucket: {settings.STORAGE_BUCKET}")
-        logger.info("MinIO storage initialized ✅")
+        from app.core.s3_client import init_s3_client, get_s3_client
+        await init_s3_client()
+        s3 = get_s3_client()
+        buckets = await s3.list_buckets()
+        bucket_names = [b["Name"] for b in buckets.get("Buckets", [])]
+        if settings.STORAGE_BUCKET not in bucket_names:
+            await s3.create_bucket(Bucket=settings.STORAGE_BUCKET)
+            logger.info(f"Created bucket: {settings.STORAGE_BUCKET}")
+        logger.info("MinIO storage initialized ✅ (client held open for process lifetime)")
     except Exception as e:
         logger.warning(f"Storage not available: {e}")
 
