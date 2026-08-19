@@ -10,13 +10,25 @@ from app.events.event_types import EventType
 
 logger = logging.getLogger(__name__)
 
-HANDLERS = {}
+# event_type.value -> list of handler coroutine functions. Must be a list,
+# not a single slot — app.workers.ai.embeddings and app.workers.files.thumbnails
+# both subscribe to EventType.ASSET_UPLOAD_COMPLETE (one does text/embedding
+# extraction and is the only code that ever advances status to READY; the
+# other does thumbnail generation). A single-slot dict silently let whichever
+# module was imported last (thumbnails, per _load_workers()'s import order)
+# overwrite the other's registration, so the embeddings handler — and the
+# READY status transition — never ran for a single asset since this repo's
+# initial commit (2026-08-19 production investigation: 378 assets stuck in
+# 'processing' going back to 2026-05-19, 100% reproducible, zero errors
+# logged since nothing was actually failing/throwing).
+HANDLERS: dict[str, list] = {}
 
 
 def on_event(event_type: EventType):
-    """Decorator to register event handler."""
+    """Decorator to register an event handler. Multiple handlers may
+    subscribe to the same event type — all of them run."""
     def decorator(func):
-        HANDLERS[event_type.value] = func
+        HANDLERS.setdefault(event_type.value, []).append(func)
         return func
     return decorator
 
@@ -38,8 +50,7 @@ async def start_consumer(channel: str = "fileserver:events"):
                 try:
                     event = json.loads(message["data"])
                     event_type = event.get("type")
-                    handler = HANDLERS.get(event_type)
-                    if handler:
+                    for handler in HANDLERS.get(event_type, []):
                         asyncio.create_task(handler(event["payload"]))
                 except Exception as e:
                     logger.error(f"Event consumer dispatch error: {e}")
