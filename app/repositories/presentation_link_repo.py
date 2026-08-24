@@ -17,6 +17,7 @@ class PresentationLinkRepository:
             id=data.get("id") or uuid.uuid4(),
             file_id=uuid.UUID(str(data["file_id"])),
             created_by=uuid.UUID(str(data["created_by"])),
+            organization_id=uuid.UUID(str(data["organization_id"])),
             token=data["token"],
             mode=data["mode"],
             revision_id=uuid.UUID(str(data["revision_id"])) if data.get("revision_id") else None,
@@ -79,6 +80,32 @@ class PresentationLinkRepository:
         )
         await db.flush()
         return await self.get_by_id(db, link_id)
+
+    async def revoke_by_file_id(self, db: AsyncSession, file_id: str) -> int:
+        """Bulk-revoke every still-active link for a file — called when the
+        file itself is soft-deleted (app/api/rest/files.py::delete_asset),
+        so GET /p/{token} 404s via the existing revoked_at check in
+        resolve_link instead of a deleted file's content staying reachable
+        forever through an old link (this was live-exploitable for
+        snapshot-mode links, which don't otherwise re-check the source
+        asset on resolve — see migrations/versions/f3a91c7e2b04)."""
+        try:
+            file_uuid = uuid.UUID(str(file_id))
+        except (ValueError, AttributeError):
+            return 0
+        now = datetime.utcnow()
+        result = await db.execute(
+            update(PresentationLink)
+            .where(
+                and_(
+                    PresentationLink.file_id == file_uuid,
+                    PresentationLink.revoked_at.is_(None),
+                )
+            )
+            .values(revoked_at=now, updated_at=now)
+        )
+        await db.flush()
+        return result.rowcount
 
     async def record_access(self, db: AsyncSession, link_id: uuid.UUID) -> None:
         """Atomic increment — access_count = access_count + 1 avoids a

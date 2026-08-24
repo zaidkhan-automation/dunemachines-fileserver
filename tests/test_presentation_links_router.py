@@ -192,10 +192,18 @@ def test_revoke_cross_org_admin_cannot_revoke_another_orgs_link():
     """Regression test for a real bug caught via live testing: an org-B
     owner/admin could revoke an org-A link with a 200, because the old
     is_org_admin check used the requester's own roles claim without ever
-    confirming the link's file belongs to their org. asset_repo.get_by_id
-    is scoped by the REQUESTER's org_id — for a cross-org link it must
-    return None, which the endpoint now maps to 404 before any
-    creator/admin check runs at all."""
+    confirming the link's file belongs to their org.
+
+    Updated for the organization_id-on-link fix (migrations/versions/
+    f3a91c7e2b04): revoke no longer resolves the link's org via its asset
+    (asset_repo.get_by_id, which used to 404 once a file was soft-deleted,
+    leaving no way to revoke that file's links at all) — it compares the
+    link's own denormalized organization_id against the requester's org_id
+    directly. _org_uuid_or_default falls back to the same default UUID
+    for any non-UUID org_id string, so both "org-A" and "org-B" here
+    resolve to that same default — fake_link.organization_id is set to a
+    DIFFERENT UUID to represent a genuinely different (real) org and
+    force the mismatch this test is checking."""
     client = TestClient(app)
     app.dependency_overrides[get_current_user] = lambda: {
         "user_id": "22222222-2222-2222-2222-222222222222", "org_id": "org-B", "roles": ["owner"],
@@ -203,26 +211,26 @@ def test_revoke_cross_org_admin_cannot_revoke_another_orgs_link():
     app.dependency_overrides[get_db] = lambda: AsyncMock()
     fake_link = SimpleNamespace(
         id="link-1", file_id="file-in-org-a", created_by="11111111-1111-1111-1111-111111111111",
+        organization_id="99999999-9999-9999-9999-999999999999",  # org-A's real id != org-B's default fallback
     )
     try:
         with patch(
             "app.api.rest.presentation_links.presentation_link_repo.get_by_id",
             new=AsyncMock(return_value=fake_link),
         ), patch(
-            "app.api.rest.presentation_links.asset_repo.get_by_id",
-            new=AsyncMock(return_value=None),  # not found in org-B, the requester's own org
-        ) as mock_asset_lookup, patch(
             "app.api.rest.presentation_links.presentation_link_repo.revoke",
             new=AsyncMock(side_effect=AssertionError("must never reach revoke() for a cross-org link")),
         ):
             r = client.delete("/api/v1/presentation-links/link-1")
         assert r.status_code == 404
-        mock_asset_lookup.assert_awaited_once()
     finally:
         app.dependency_overrides.clear()
 
 
 def test_revoke_same_org_admin_can_revoke_even_if_not_creator():
+    """org_id "org-A" is not a UUID, so _org_uuid_or_default falls back to
+    its default constant — fake_link.organization_id matches that same
+    default to represent "same org as the requester"."""
     client = TestClient(app)
     app.dependency_overrides[get_current_user] = lambda: {
         "user_id": "22222222-2222-2222-2222-222222222222", "org_id": "org-A", "roles": ["admin"],
@@ -230,15 +238,13 @@ def test_revoke_same_org_admin_can_revoke_even_if_not_creator():
     app.dependency_overrides[get_db] = lambda: AsyncMock()
     fake_link = SimpleNamespace(
         id="link-1", file_id="file-in-org-a", created_by="11111111-1111-1111-1111-111111111111",
+        organization_id="00000000-0000-0000-0000-000000000001",
         revoked_at="2026-08-18T00:00:00",
     )
     try:
         with patch(
             "app.api.rest.presentation_links.presentation_link_repo.get_by_id",
             new=AsyncMock(return_value=fake_link),
-        ), patch(
-            "app.api.rest.presentation_links.asset_repo.get_by_id",
-            new=AsyncMock(return_value=SimpleNamespace(id="file-in-org-a")),  # found: same org
         ), patch(
             "app.api.rest.presentation_links.presentation_link_repo.revoke",
             new=AsyncMock(return_value=fake_link),
@@ -257,14 +263,12 @@ def test_revoke_same_org_non_creator_non_admin_gets_403_not_200():
     app.dependency_overrides[get_db] = lambda: AsyncMock()
     fake_link = SimpleNamespace(
         id="link-1", file_id="file-in-org-a", created_by="11111111-1111-1111-1111-111111111111",
+        organization_id="00000000-0000-0000-0000-000000000001",  # same org as requester's default fallback
     )
     try:
         with patch(
             "app.api.rest.presentation_links.presentation_link_repo.get_by_id",
             new=AsyncMock(return_value=fake_link),
-        ), patch(
-            "app.api.rest.presentation_links.asset_repo.get_by_id",
-            new=AsyncMock(return_value=SimpleNamespace(id="file-in-org-a")),  # same org, but not creator/admin
         ), patch(
             "app.api.rest.presentation_links.presentation_link_repo.revoke",
             new=AsyncMock(side_effect=AssertionError("must never reach revoke() without permission")),

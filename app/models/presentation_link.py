@@ -23,6 +23,14 @@ class PresentationLink(Base):
     file_id = Column(UUID(as_uuid=True), ForeignKey("assets.id"), nullable=False)
     created_by = Column(UUID(as_uuid=True), nullable=False)
 
+    # Denormalized from the asset at creation time (same convention as
+    # Asset.organization_id: no FK, just indexed) so a link's org can be
+    # resolved even after its file is soft-deleted — asset_repo.get_by_id
+    # filters deleted_at IS NULL, which used to make revoke_presentation_link
+    # 404 on a deleted file's links, with no other API-level way to revoke
+    # them. See migrations/versions/f3a91c7e2b04.
+    organization_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+
     token = Column(String(32), unique=True, nullable=False)
     mode = Column(String(20), nullable=False)  # "live" | "snapshot"
     revision_id = Column(UUID(as_uuid=True), ForeignKey("versions.id"), nullable=True)

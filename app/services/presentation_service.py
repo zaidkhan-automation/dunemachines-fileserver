@@ -259,6 +259,7 @@ async def create_link(
     link = await presentation_link_repo.create(db, {
         "file_id": file_id,
         "created_by": str(created_by_uuid),
+        "organization_id": org_id,
         "token": token,
         "mode": mode,
         "revision_id": revision_id,

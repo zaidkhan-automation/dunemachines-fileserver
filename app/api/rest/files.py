@@ -247,6 +247,14 @@ async def delete_asset(
     if not deleted:
         raise HTTPException(status_code=404, detail="Asset not found")
 
+    # Revoke any presentation links for this file so GET /p/{token} 404s
+    # via resolve_link's existing revoked_at check instead of continuing
+    # to serve a deleted file's content — snapshot-mode links in
+    # particular never re-check the source asset on resolve, so without
+    # this a deleted file's frozen snapshot stayed reachable forever.
+    from app.repositories.presentation_link_repo import presentation_link_repo
+    await presentation_link_repo.revoke_by_file_id(db, asset_id)
+
     background_tasks.add_task(search_service.delete_from_index, asset_id, user["org_id"])
     background_tasks.add_task(_delete_blob_from_storage, asset.blob_ref)
 
