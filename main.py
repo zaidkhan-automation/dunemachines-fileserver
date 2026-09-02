@@ -27,6 +27,7 @@ from app.api.rest.auth import router as auth_router
 from app.api.rest.connectors import router as connectors_router
 from app.api.rest.permissions import router as permissions_router
 from app.api.rest.acl import router as acl_router
+from app.api.rest.omnius_files import router as omnius_files_router
 from app.api.rest.presentation_links import router as presentation_links_router, public_router as presentation_links_public_router
 from app.connectors.github.webhook_handler import router as github_webhook_router
 from app.api.graphql.schema import graphql_router
@@ -103,6 +104,7 @@ app.include_router(projects_router, prefix=PREFIX)
 app.include_router(connectors_router, prefix=PREFIX)
 app.include_router(permissions_router, prefix=PREFIX)
 app.include_router(acl_router,      prefix=PREFIX)
+app.include_router(omnius_files_router, prefix=PREFIX)
 app.include_router(presentation_links_router, prefix=PREFIX)
 app.include_router(presentation_links_public_router, prefix=PREFIX)
 app.include_router(github_webhook_router, prefix="/api/v1")
