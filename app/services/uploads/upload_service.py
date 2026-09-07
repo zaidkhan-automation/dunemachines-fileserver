@@ -9,6 +9,7 @@ Flow:
 """
 import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional, Dict, Any
 from app.core.config import settings
 from app.core.s3_client import get_s3_client
@@ -118,6 +119,18 @@ class UploadService:
 
     def _detect_asset_type(self, mime_type: str, filename: str) -> str:
         mime = mime_type.lower()
+        # Parquet has no IANA-registered MIME type, so most callers land on
+        # something generic for it — the exact live bug this guards against:
+        # dunemachines_backend's own fileserver_sync.py MIME_MAP fell back to
+        # "text/plain" for .parquet (not in that map), which used to make it
+        # past the mime.startswith("text/") branch below into AssetType.CODE.
+        # AssetType.DATASET already exists in the taxonomy for exactly this
+        # shape of file but was never reachable from here — check the
+        # filename extension directly (this function already receives it,
+        # previously unused) rather than depending on every caller sending a
+        # correct mime_type for a format with no standard one.
+        if Path(filename).suffix.lower() == ".parquet":
+            return AssetType.DATASET
         if mime.startswith("image/"): return AssetType.IMAGE
         elif mime.startswith("video/"): return AssetType.VIDEO
         elif mime.startswith("audio/"): return AssetType.AUDIO
