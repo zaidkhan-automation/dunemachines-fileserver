@@ -36,7 +36,19 @@ class Settings(BaseSettings):
     DUNIVERSE_JWT_SECRET: str
 
     # Qdrant
-    QDRANT_URL: str = "http://76.13.17.48:7333"
+    # 2026-09-18 production bug fix: this default pointed at a
+    # non-localhost address (76.13.17.48) that is not reachable from this
+    # host and was never the actual canonical Qdrant instance -- it
+    # shadowed the correct value in .env too (a duplicate QDRANT_URL key,
+    # with this exact same wrong value as the last/winning line). Proven
+    # canonical destination: 127.0.0.1:7333 (qdrant_system) -- its
+    # fileserver_assets_<org_id[:8]> collections already exist there,
+    # matching this app's own _collection_name() naming convention exactly
+    # (app/services/search/indexer.py). ~89% of this app's "ready" assets
+    # (1385 of 1555, across 142 of 144 orgs) had no Qdrant embedding at all
+    # as a result -- confirmed by cross-referencing Postgres asset counts
+    # against actual Qdrant point counts, not just recent log volume.
+    QDRANT_URL: str = "http://127.0.0.1:7333"
     QDRANT_API_KEY: Optional[str] = None
 
     # Public web app base URL — used to build shareable presentation-link
