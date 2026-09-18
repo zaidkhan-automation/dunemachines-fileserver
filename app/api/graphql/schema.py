@@ -2,6 +2,7 @@
 GraphQL Schema — Asset graph queries.
 Strawberry + FastAPI integration.
 """
+import logging
 import strawberry
 from strawberry.fastapi import GraphQLRouter
 from strawberry.extensions import AddValidationRules
@@ -10,6 +11,8 @@ from typing import List, Optional
 from datetime import datetime
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 # ── Types ─────────────────────────────────────────────────────────
@@ -308,7 +311,15 @@ async def get_context(request):
                 # default get_current_user uses (see app/core/security.py).
                 "roles": payload.get("roles") or identity.get("roles") or DEFAULT_BRIDGED_ROLES,
             }
-        except Exception:
+        except Exception as native_exc:
+            # Expected on every Duniverse-bridged token (wrong secret for
+            # decode_token) — that case is not worth logging. What matters
+            # is NOT silently losing a resolve_identity()-stage failure
+            # (e.g. a DB/Redis outage) behind the same blanket except as an
+            # ordinary "wrong token type" — those two causes used to be
+            # indistinguishable. No token/payload content is ever logged.
+            logger.debug("GraphQL native token auth failed, trying Duniverse token: %s: %s",
+                         type(native_exc).__name__, native_exc)
             try:
                 from app.core.security import decode_duniverse_token, resolve_identity, DEFAULT_BRIDGED_ROLES
                 payload = decode_duniverse_token(token)
@@ -325,8 +336,17 @@ async def get_context(request):
                 # default get_current_user uses (see app/core/security.py).
                 "roles": payload.get("roles") or identity.get("roles") or DEFAULT_BRIDGED_ROLES,
                 }
-            except Exception:
-                pass
+            except Exception as duniverse_exc:
+                # Both token types failed — client-visible behavior is
+                # unchanged (user stays None, every resolver already
+                # treats that as "no access" and returns None/empty — see
+                # e.g. Query.asset's `if not user: return None`). This log
+                # is the only previously-missing piece: without it, a real
+                # resolve_identity() outage (DB/Redis down) was
+                # indistinguishable in the logs from a plain expired/
+                # malformed token. Never logs the token or decoded claims.
+                logger.warning("GraphQL auth failed for both token types: %s: %s",
+                               type(duniverse_exc).__name__, duniverse_exc)
 
     request.state.user = user
     return {"request": request}
