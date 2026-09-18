@@ -73,12 +73,32 @@ class UploadService:
             }
         }
 
-    async def complete_upload(self, asset_id: str, object_key: str, checksum: Optional[str] = None) -> Dict[str, Any]:
+    async def complete_upload(
+        self, asset_id: str, org_id: str, filename: str, checksum: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Security fix (F-02, remediation audit): the object_key used to
+        bind this asset's blob_ref is now ALWAYS re-derived server-side
+        from (org_id, asset_id, filename) via _get_object_key — the same
+        deterministic function init_upload used to build the original
+        presigned PUT URL — rather than trusted from the client's request
+        body. Previously the REST handler passed req.object_key (a raw
+        client-supplied string) straight through to _verify_object_exists
+        and then into blob_ref: a caller who owned ANY asset in ANY org
+        could call /complete with a DIFFERENT org's real object_key
+        (these leak inherently in presigned download/thumbnail URLs) and
+        bind their own asset to that foreign object. Since org_id/asset_id/
+        filename here all come from the already org-scoped Asset row
+        (asset_repo.get_by_id already filtered by the caller's own org),
+        the recomputed key can only ever point at storage the caller's
+        own org actually owns — cross-org binding is now structurally
+        impossible, not just checked."""
+        object_key = self._get_object_key(org_id, asset_id, filename)
         exists = await self._verify_object_exists(object_key)
         if not exists:
             raise ValueError(f"Object not found in storage: {object_key}")
         return {
             "asset_id": asset_id,
+            "object_key": object_key,
             "status": AssetStatus.PROCESSING,
             "message": "Upload complete. Processing started.",
         }

@@ -65,7 +65,13 @@ class InitUploadRequest(BaseModel):
 
 
 class CompleteUploadRequest(BaseModel):
-    object_key: str
+    # Security fix (F-02): object_key is no longer trusted for anything —
+    # the server always re-derives the authoritative key itself from the
+    # already org-scoped Asset row (see complete_upload below / upload_
+    # service.complete_upload's docstring for the full why). Kept as an
+    # optional field purely for backward compatibility with existing
+    # clients that still send it; any value here is accepted and ignored.
+    object_key: Optional[str] = None
     checksum: Optional[str] = None
 
 
@@ -177,10 +183,22 @@ async def complete_upload(
     # a client that never finished its PUT (or PUT'd to the wrong key)
     # could still call /complete and leave a permanently-empty asset that
     # looks saved.
+    #
+    # Security fix (F-02): object_key is ALWAYS re-derived server-side
+    # from this already org-scoped `asset` row (org_id, asset_id, name) —
+    # req.object_key is never used for this. See upload_service.
+    # complete_upload's docstring for the full root-cause writeup: a
+    # client-supplied key let one org's asset be bound to another org's
+    # real object, since object keys leak inherently in presigned
+    # download/thumbnail URLs.
     try:
-        await upload_service.complete_upload(upload_id, req.object_key, req.checksum)
+        complete_result = await upload_service.complete_upload(
+            upload_id, str(asset.organization_id), asset.name, req.checksum,
+        )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+
+    object_key = complete_result["object_key"]
 
     # Verify actual object checksum matches what client claims
     if req.checksum:
@@ -189,7 +207,7 @@ async def complete_upload(
             from app.core.config import settings
             from app.core.s3_client import get_s3_client
             s3 = get_s3_client()
-            response = await s3.get_object(Bucket=settings.STORAGE_BUCKET, Key=req.object_key)
+            response = await s3.get_object(Bucket=settings.STORAGE_BUCKET, Key=object_key)
             content = await response["Body"].read()
             actual_checksum = hashlib.sha256(content).hexdigest()
             if actual_checksum != req.checksum:
@@ -208,7 +226,7 @@ async def complete_upload(
     await asset_repo.update_blob(
         db,
         upload_id,
-        blob_ref=req.object_key,
+        blob_ref=object_key,
         blob_bucket="dunemachines-files",
         checksum=req.checksum,
     )
@@ -217,7 +235,7 @@ async def complete_upload(
     await publish_upload_complete(
         asset_id=upload_id,
         org_id=user["org_id"],
-        object_key=req.object_key,
+        object_key=object_key,
     )
 
     return {
