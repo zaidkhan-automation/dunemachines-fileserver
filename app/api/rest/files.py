@@ -217,6 +217,52 @@ async def get_asset(
     return _asset_to_dict(asset)
 
 
+@router.get("/{asset_id}/content")
+async def get_asset_content(
+    asset_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: Dict = Depends(get_current_user),
+):
+    """Raw blob bytes for any asset in the caller's org, org-scoped exactly
+    like get_asset above (asset_repo.get_by_id already filters by
+    user["org_id"] — no separate permission check needed for read, same
+    as list_assets/get_asset).
+
+    Added for the Org Files Unification cloud->local hydration path
+    (dunemachines_backend's fileserver_sync.hydrate_user_from_fileserver):
+    that needs to download ANY asset under the canonical org tree
+    (GET /assets/tree, org-root-scoped), not just ones reachable through
+    omnius_files.py's /read bridge — that endpoint resolves a path
+    relative to the caller's own "Omnius Workspace ({uid})" subfolder
+    only, so it can't reach a sibling top-level asset or a teammate's
+    file elsewhere in the same org tree, which hydration must be able to
+    do to represent the tree the frontend actually shows."""
+    asset = await asset_repo.get_by_id(db, asset_id, user["org_id"])
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    if asset.asset_type == "folder":
+        raise HTTPException(status_code=400, detail="Not a file")
+    if not asset.blob_ref:
+        raise HTTPException(status_code=404, detail="File has no content yet")
+
+    from fastapi.responses import Response
+    from app.core.config import settings
+    from app.core.s3_client import get_s3_client
+    import logging
+
+    s3 = get_s3_client()
+    try:
+        obj = await s3.get_object(Bucket=settings.STORAGE_BUCKET, Key=asset.blob_ref)
+        content = await obj["Body"].read()
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            f"[Assets] blob fetch failed for {asset_id} ({asset.blob_ref}): {type(e).__name__}: {e}"
+        )
+        raise HTTPException(status_code=502, detail="Failed to fetch file content from storage")
+
+    return Response(content=content, media_type=asset.mime_type or "application/octet-stream")
+
+
 async def _delete_blob_from_storage(blob_ref: Optional[str]):
     """Delete the underlying object from MinIO — called after soft delete."""
     if not blob_ref:
