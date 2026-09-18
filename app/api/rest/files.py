@@ -223,8 +223,8 @@ async def get_asset_content(
     db: AsyncSession = Depends(get_db),
     user: Dict = Depends(get_current_user),
 ):
-    """Raw blob bytes for any asset in the caller's org, org-scoped exactly
-    like get_asset above (asset_repo.get_by_id already filters by
+    """Streams blob bytes for any asset in the caller's org, org-scoped
+    exactly like get_asset above (asset_repo.get_by_id already filters by
     user["org_id"] — no separate permission check needed for read, same
     as list_assets/get_asset).
 
@@ -236,7 +236,33 @@ async def get_asset_content(
     relative to the caller's own "Omnius Workspace ({uid})" subfolder
     only, so it can't reach a sibling top-level asset or a teammate's
     file elsewhere in the same org tree, which hydration must be able to
-    do to represent the tree the frontend actually shows."""
+    do to represent the tree the frontend actually shows.
+
+    F-11 (remediation audit): streams the object in chunks via
+    StreamingResponse instead of materializing the whole blob in memory
+    with a single .read() — this endpoint has no size cap, so a large
+    asset used to mean a large in-process buffer per concurrent request.
+    Same authorization and error semantics as before for the INITIAL
+    fetch (404 missing/folder/no-blob-ref, 502 if get_object itself
+    fails) — a failure that happens mid-stream, after a 200 has already
+    started, can no longer become a clean HTTP error status; that's an
+    inherent trade-off of streaming, not something this change can avoid.
+
+    F-07 (remediation audit): unlike download-url (which already forces
+    Content-Disposition: attachment via generate_presigned_get's
+    filename param), this endpoint used to return the caller-declared
+    mime_type with no Content-Disposition and no
+    X-Content-Type-Options — a browser opening this URL directly would
+    render whatever mime_type was declared at upload time (or, without
+    nosniff, might sniff-and-render even a blandly-declared file if its
+    actual bytes look like HTML). Both are closed here: nosniff is now
+    always sent, and anything whose stored mime_type — or a sniffed
+    'dangerous' flag recorded at upload completion, see
+    upload_service._sniff_content_type — falls in
+    DANGEROUS_RENDER_MIME_TYPES is forced to attachment disposition
+    regardless of what was declared. Arbitrary file types are still
+    fully supported; only in-browser rendering of active content is
+    restricted."""
     asset = await asset_repo.get_by_id(db, asset_id, user["org_id"])
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
@@ -245,22 +271,45 @@ async def get_asset_content(
     if not asset.blob_ref:
         raise HTTPException(status_code=404, detail="File has no content yet")
 
-    from fastapi.responses import Response
+    from fastapi.responses import StreamingResponse
     from app.core.config import settings
     from app.core.s3_client import get_s3_client
+    from app.services.uploads.upload_service import DANGEROUS_RENDER_MIME_TYPES
     import logging
 
     s3 = get_s3_client()
     try:
         obj = await s3.get_object(Bucket=settings.STORAGE_BUCKET, Key=asset.blob_ref)
-        content = await obj["Body"].read()
     except Exception as e:
         logging.getLogger(__name__).warning(
             f"[Assets] blob fetch failed for {asset_id} ({asset.blob_ref}): {type(e).__name__}: {e}"
         )
         raise HTTPException(status_code=502, detail="Failed to fetch file content from storage")
 
-    return Response(content=content, media_type=asset.mime_type or "application/octet-stream")
+    body = obj["Body"]
+
+    async def _stream_body():
+        try:
+            async for chunk in body.iter_chunks():
+                yield chunk
+        finally:
+            # Best-effort — releases the underlying HTTP connection back
+            # to the shared s3 client's pool on early disconnect (body
+            # fully consumed to EOF already releases it on its own; this
+            # only matters for the abandoned-mid-stream case). Never lets
+            # a cleanup failure surface past the generator.
+            try:
+                body.close()
+            except Exception:
+                pass
+
+    normalized_mime = (asset.mime_type or "application/octet-stream").strip().lower().split(";", 1)[0].strip()
+    sniff_flagged_dangerous = bool((asset.extra_data or {}).get("content_sniff", {}).get("dangerous"))
+    headers = {"X-Content-Type-Options": "nosniff"}
+    if normalized_mime in DANGEROUS_RENDER_MIME_TYPES or sniff_flagged_dangerous:
+        headers["Content-Disposition"] = f'attachment; filename="{asset.name}"'
+
+    return StreamingResponse(_stream_body(), media_type=asset.mime_type or "application/octet-stream", headers=headers)
 
 
 async def _delete_blob_from_storage(blob_ref: Optional[str]):

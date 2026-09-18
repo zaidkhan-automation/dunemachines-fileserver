@@ -7,6 +7,7 @@ Flow:
 3. Client calls POST /uploads/{upload_id}/complete
 4. Workers process the asset (OCR, embed, thumbnail)
 """
+import logging
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -14,6 +15,30 @@ from typing import Optional, Dict, Any
 from app.core.config import settings
 from app.core.s3_client import get_s3_client
 from app.models.asset import AssetType, AssetStatus
+
+logger = logging.getLogger(__name__)
+
+# Content-type safety (F-07, remediation audit). settings.ALLOWED_MIME_TYPES
+# defaults to [] — this product intentionally accepts arbitrary file types
+# (general-purpose org file storage, not a narrow document-upload feature;
+# confirmed via InitUploadRequest.validate_mime_type's own comment and the
+# github/gdrive/slack connectors, which sync arbitrary repo/drive/message
+# content). A restrictive allowlist would break that. The real risk isn't
+# "wrong file type accepted" — it's a browser RENDERING uploaded content
+# as active/executable (HTML/SVG/JS) rather than treating it as an inert
+# download, either because the declared mime_type genuinely is one of
+# those types, or because a browser without X-Content-Type-Options:
+# nosniff second-guesses a bland declared type (e.g. text/plain) by
+# sniffing the actual bytes and rendering them as HTML anyway. Both are
+# addressed at SERVE time in files.py::get_asset_content (nosniff always;
+# forced attachment disposition for anything in this set), not by
+# blocking the upload — see that function's own docstring.
+DANGEROUS_RENDER_MIME_TYPES = frozenset({
+    "text/html", "application/xhtml+xml", "image/svg+xml",
+    "text/javascript", "application/javascript", "application/x-javascript",
+})
+
+_SNIFF_BYTES = 4096  # enough for libmagic's signature matching; never the whole file
 
 # Defensive bounds on presigned-URL lifetime — no caller passes a value
 # outside this range today (both call sites use the 3600s default), but
@@ -75,6 +100,7 @@ class UploadService:
 
     async def complete_upload(
         self, asset_id: str, org_id: str, filename: str, checksum: Optional[str] = None,
+        declared_mime_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Security fix (F-02, remediation audit): the object_key used to
         bind this asset's blob_ref is now ALWAYS re-derived server-side
@@ -101,7 +127,46 @@ class UploadService:
             "object_key": object_key,
             "status": AssetStatus.PROCESSING,
             "message": "Upload complete. Processing started.",
+            "content_sniff": await self._sniff_content_type(object_key, declared_mime_type),
         }
+
+    async def _sniff_content_type(self, object_key: str, declared_mime_type: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Reads a small (4KB) prefix of the just-uploaded object and
+        magic-byte-sniffs it, purely for observability/flagging — never
+        blocks or rewrites the upload. Returns None on any failure (a
+        missing libmagic install, a truncated/empty object, an S3 hiccup)
+        so a detection-layer problem can never turn into an upload
+        failure; the caller treats None as "no sniff data available",
+        same as a clean match. Only returns a non-None dict when there is
+        something worth recording — a mismatch between declared and
+        detected type, or a detected type in DANGEROUS_RENDER_MIME_TYPES
+        — so the common case (everything matches, nothing dangerous)
+        writes nothing extra to the asset row."""
+        try:
+            import magic
+            s3 = get_s3_client()
+            try:
+                obj = await s3.get_object(Bucket=self.bucket, Key=object_key, Range=f"bytes=0-{_SNIFF_BYTES - 1}")
+            except Exception:
+                # Some S3-compatible stores reject a Range past EOF on a
+                # tiny object with a 416, not a 200 with a short body —
+                # retry unranged rather than losing detection entirely
+                # for small (and therefore cheap to read whole) files.
+                obj = await s3.get_object(Bucket=self.bucket, Key=object_key)
+            sample = await obj["Body"].read()
+            if not sample:
+                return None
+            detected = magic.from_buffer(sample, mime=True)
+        except Exception as e:
+            logger.debug(f"[Uploads] content sniff skipped for {object_key}: {type(e).__name__}: {e}")
+            return None
+
+        declared_norm = (declared_mime_type or "").strip().lower().split(";", 1)[0].strip()
+        matched = declared_norm == detected
+        dangerous = detected in DANGEROUS_RENDER_MIME_TYPES
+        if matched and not dangerous:
+            return None
+        return {"declared": declared_norm, "detected": detected, "matched": matched, "dangerous": dangerous}
 
     async def generate_presigned_get(self, object_key: str, expires_in: int = 3600, filename: Optional[str] = None) -> str:
         expires_in = _clamp_expiry(expires_in)

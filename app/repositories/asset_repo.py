@@ -136,6 +136,7 @@ class AssetRepository:
         blob_bucket: str,
         checksum: Optional[str] = None,
         size_bytes: Optional[int] = None,
+        extra_data: Optional[Dict] = None,
     ) -> Optional[Asset]:
         values = {
             "blob_ref": blob_ref,
@@ -147,6 +148,13 @@ class AssetRepository:
             values["checksum"] = checksum
         if size_bytes:
             values["size_bytes"] = size_bytes
+        if extra_data is not None:
+            # Full-replace, not a JSONB merge — callers must pass the
+            # already-merged dict (see uploads.py::complete_upload, which
+            # merges onto the asset's existing extra_data before calling
+            # this, same discipline update_status's own extra_data param
+            # already required).
+            values["extra_data"] = extra_data
 
         await db.execute(
             update(Asset).where(Asset.id == uuid.UUID(asset_id)).values(**values)

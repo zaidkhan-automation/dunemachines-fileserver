@@ -194,11 +194,27 @@ async def complete_upload(
     try:
         complete_result = await upload_service.complete_upload(
             upload_id, str(asset.organization_id), asset.name, req.checksum,
+            declared_mime_type=asset.mime_type,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
     object_key = complete_result["object_key"]
+
+    # Content-type safety (F-07): a non-None content_sniff means either a
+    # declared/detected mismatch or a detected dangerous-if-rendered type
+    # (see upload_service._sniff_content_type) — merged into the asset's
+    # existing extra_data (so any extra_data sent at /init survives) and
+    # written together with the blob_ref update below, in one statement,
+    # rather than a separate write that could leave a stale intermediate
+    # status if this request failed partway through. This never blocks
+    # completion — actual safety is enforced at serve time
+    # (files.py::get_asset_content), not here.
+    content_sniff = complete_result.get("content_sniff")
+    extra_data_update = None
+    if content_sniff:
+        extra_data_update = dict(asset.extra_data or {})
+        extra_data_update["content_sniff"] = content_sniff
 
     # Verify actual object checksum matches what client claims
     if req.checksum:
@@ -229,6 +245,7 @@ async def complete_upload(
         blob_ref=object_key,
         blob_bucket="dunemachines-files",
         checksum=req.checksum,
+        extra_data=extra_data_update,
     )
 
     # Publish event — triggers AI workers
