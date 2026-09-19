@@ -114,7 +114,20 @@ async def handle_upload_complete(payload: dict):
 
             # Extract text
             text = await extract_text_from_asset(object_key, mime_type)
-            if not text:
+            # 2026-09-19 historical reindex repair: a whitespace-only
+            # extraction (empty .md files containing just a newline;
+            # scanned/malformed PDFs where pypdf recovers nothing but
+            # layout spaces) is truthy in Python, so `if not text:` never
+            # caught it -- the fallback below never fired, and this
+            # whitespace-only string went straight to the embedding
+            # model, which returns no vector for it. Confirmed live: 9
+            # real historical assets silently never got indexed this way,
+            # with no exception anywhere in the call chain (index_asset's
+            # own try/except swallows the "no vector" case as a plain
+            # `return False`, logged, never raised) -- indistinguishable
+            # from success to any caller that doesn't independently verify
+            # against Qdrant afterward.
+            if not text or not text.strip():
                 # Use filename as fallback
                 text = asset.name
 

@@ -39,6 +39,29 @@ def test_public_ip_requires_key():
     assert qdrant_requires_api_key("http://76.13.17.48:7333") is True
 
 
+def test_qdrant_url_default_is_localhost_not_a_stale_external_address():
+    """Permanent regression lock, 2026-09-19 production incident: this
+    exact default previously WAS "http://76.13.17.48:7333" -- an address
+    that is not reachable from this host and was never the actual
+    canonical Qdrant instance. It silently shadowed a correct
+    127.0.0.1:7333 value in .env too (a duplicate key, dotenv's
+    last-key-wins semantics), and because neither disagreed, nothing ever
+    surfaced the mismatch. Left ~89% of this app's "ready" assets (1385 of
+    1555 at the time) with no Qdrant embedding at all -- no exception,
+    no crash, just silently unsearchable, for as long as this default
+    existed. This test's only job is to make sure a future edit can never
+    quietly reintroduce a non-localhost default here without deliberately
+    changing this test in the same commit."""
+    from app.core.config import Settings
+    default_url = Settings.model_fields["QDRANT_URL"].default
+    assert qdrant_requires_api_key(default_url) is False, (
+        f"QDRANT_URL's default ({default_url!r}) is a non-localhost address -- "
+        "this is exactly the production incident this test exists to prevent. "
+        "If this default genuinely needs to change, update it deliberately and "
+        "update this test in the same commit, don't just delete the assertion."
+    )
+
+
 def _run_with_env(extra_env: dict) -> subprocess.CompletedProcess:
     env = {**os.environ, **extra_env}
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
